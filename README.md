@@ -300,11 +300,39 @@ tested on generated signals and empty channels, but no live voice yet.
 
 ## Legal
 
-vocatron only receives. Listening rules differ by country. In Turkey,
-recording or sharing private communications is forbidden; do not record or
-publish conversations that were not meant for the public. vocatron refuses
-to record the `wireless` (wireless microphone) group. Never modify it to
+vocatron only receives. Listening rules differ by country, and you are
+responsible for following the law where you use it. vocatron refuses to
+record the `wireless` (wireless microphone) group. Never modify it to
 transmit, least of all on aviation or marine frequencies.
+
+### Haberleşmenin Gizliliği (TCK Madde 132 ve 133)
+
+Havada şifresiz dolaşan her sinyali dinlemek yasal olarak serbest değildir.
+
+**Yasal olan dinlemeler:** Kamuya açık radyo yayınları, deniz hava
+durumu/navtex yayınları ve amatör telsizcilerin herkese açık hobi/afet
+haberleşmeleri (amatör bantlar) serbestçe dinlenebilir.
+
+**Suç teşkil eden dinlemeler:** Polis, jandarma, sahil güvenlik, itfaiye ve
+ambulans gibi kamu güvenliği haberleşmelerini; şirketlerin veya şahısların
+kapalı devre telsiz görüşmelerini dinlemek, şifreli haberleşmeleri kırmak,
+dinlenen kayıtları depolamak ya da üçüncü şahıslarla paylaşmak Türk Ceza
+Kanunu kapsamında haberleşmenin gizliliğini ihlal suçudur.
+
+### Privacy of communications in Turkey (Turkish Penal Code, articles 132 and 133)
+
+Not every unencrypted signal in the air is legal to listen to.
+
+**Legal to listen to:** public radio broadcasts, marine weather and NAVTEX
+broadcasts, and radio amateurs' open hobby and disaster communications
+(the amateur bands).
+
+**A crime:** listening to public-safety communications such as police,
+gendarmerie, coast guard, fire and ambulance; listening to the closed
+radio conversations of companies or individuals; breaking encrypted
+communications; storing recordings of what was heard; or sharing them with
+third parties. Under the Turkish Penal Code these violate the privacy of
+communications.
 
 ## License
 
