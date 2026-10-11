@@ -1,8 +1,13 @@
 #pragma once
 
 // Plays 48 kHz mono float audio. The callback only reads a queue.
-// If the queue is empty it writes silence and counts an underrun.
 // It never allocates and never waits.
+//
+// The radio hands over audio in lumps of about 55 ms, and its clock is not
+// exactly the sound card's clock. So playback keeps a cushion: it waits
+// until `prime_frames` are queued before it plays, and if the queue ever
+// runs dry it goes quiet and waits for the full cushion again. Each time it
+// runs dry counts as one underrun (one audible gap).
 
 #include "ring.hpp"
 
@@ -17,7 +22,15 @@ struct PlaybackUser {
   SpscRing<float> *ring = nullptr;
   std::atomic<std::uint64_t> *underruns = nullptr;
   std::atomic<std::uint64_t> *played = nullptr;
+  // Frames to queue before playing. 0 plays whatever is there.
+  std::size_t prime_frames = 0;
+  // Only the audio callback touches this.
+  bool priming = true;
 };
+
+// What the audio callback does, as a plain function so tests can call it.
+// Fills `dst` with `frames` samples: queued audio, or silence while priming.
+void playback_fill(PlaybackUser &user, float *dst, std::size_t frames);
 
 class Speakers {
 public:

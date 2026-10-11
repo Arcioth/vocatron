@@ -21,16 +21,20 @@ struct ListenView {
 // Return false to stop this listen. The TUI uses this to draw and read keys.
 using ListenTick = bool (*)(const ListenView &view, void *user);
 
-// A station change asked for by the tick. The tick fills it in and sets
-// `pending`. Right after the tick returns, run_listen moves the tuner and
-// swaps the demodulator without closing the radio or the speakers, then
-// clears `pending`. `mode` is read at that moment only.
+// A station or gain change asked for by the tick. The tick fills in every
+// field and sets `pending`. Right after the tick returns, run_listen applies
+// it without closing the radio or the speakers, then clears `pending`.
+// A new frequency or mode swaps the demodulator. A gain-only change just
+// sets the hardware. `mode` is read at that moment only.
 struct ListenRetune {
   bool pending = false;
   std::uint64_t channel_hz = 0;
   // "wfm", "am", or "nfm".
   const char *mode = nullptr;
   std::uint32_t lna_db = 16;
+  std::uint32_t vga_db = 20;
+  // The RF amp. Only true when the person turned it on.
+  bool amp = false;
 };
 
 struct ListenConfig {

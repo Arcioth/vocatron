@@ -24,10 +24,12 @@
         # libhackrf is used now. liquid-dsp and fftwFloat are the DSP
         # libraries the later milestones link; they are here so the
         # shell does not have to grow a new input at each step.
+        # ftxui draws the station screen: layout, buttons, and mouse clicks.
         buildInputs = with pkgs; [
           hackrf
           liquid-dsp
           fftwFloat
+          ftxui
         ];
       };
     };

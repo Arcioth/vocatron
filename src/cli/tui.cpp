@@ -1,10 +1,14 @@
 // Station screen.
 //
-// The top half is the receiver: which station, how strong the channel is,
-// and whether the squelch is letting sound through. The bottom half is the
-// list from channels/istanbul.toml. Enter tunes the highlighted row.
-// The speaker is open the whole time. Each mode has its own squelch,
-// so an empty channel stays quiet instead of playing hiss.
+// Left: the station list from channels/istanbul.toml, with group tabs on
+// top. Click a station (or use the arrows and Enter) to listen. Right: what
+// is playing, a signal bar, and buttons for gain, the RF amp, squelch, and
+// mute. Everything works with the mouse and with the keyboard.
+//
+// The radio runs in its own thread (run_listen). This screen never touches
+// the HackRF directly. It sends changes through ListenRetune and reads back
+// a ListenView snapshot about 20 times a second, so drawing can never cause
+// an audio dropout.
 
 #include "tui.hpp"
 
@@ -13,215 +17,49 @@
 #include "core/channels.hpp"
 #include "core/listen.hpp"
 
-#include <poll.h>
-#include <sys/ioctl.h>
-#include <termios.h>
+#include <ftxui/component/component.hpp>
+#include <ftxui/component/event.hpp>
+#include <ftxui/component/mouse.hpp>
+#include <ftxui/component/screen_interactive.hpp>
+#include <ftxui/dom/elements.hpp>
+
 #include <unistd.h>
 
 #include <atomic>
-#include <csignal>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace vocatron {
 namespace {
 
-volatile std::sig_atomic_t g_tui_stop = 0;
+using namespace ftxui;
 
-void on_tui_signal(int /*sig*/) { g_tui_stop = 1; }
-
-struct TuiSignals {
-  struct sigaction old_int{};
-  struct sigaction old_term{};
-  bool installed = false;
-
-  TuiSignals() {
-    struct sigaction action{};
-    action.sa_handler = on_tui_signal;
-    sigemptyset(&action.sa_mask);
-    if (sigaction(SIGINT, &action, &old_int) == 0 && sigaction(SIGTERM, &action, &old_term) == 0) {
-      installed = true;
-    }
-  }
-
-  ~TuiSignals() {
-    if (installed) {
-      sigaction(SIGINT, &old_int, nullptr);
-      sigaction(SIGTERM, &old_term, nullptr);
-    }
-  }
-
-  TuiSignals(const TuiSignals &) = delete;
-  TuiSignals &operator=(const TuiSignals &) = delete;
+struct Group {
+  const char *key;
+  const char *label;
 };
 
-const char *kGroups[] = {"all",     "broadcast", "airband", "marine",
-                         "amateur", "pmr",       "cb",      "shortwave"};
-constexpr int kGroupCount = 8;
-
-const char *kReset = "\033[0m";
-const char *kDim = "\033[2m";
-const char *kRev = "\033[7m";
-const char *kCyan = "\033[36m";
-const char *kGreen = "\033[32m";
-const char *kBold = "\033[1m";
-
-class Term {
-public:
-  bool enter() {
-    if (tcgetattr(STDIN_FILENO, &saved_) != 0) {
-      return false;
-    }
-    termios raw = saved_;
-    raw.c_lflag = static_cast<tcflag_t>(raw.c_lflag & ~(ICANON | ECHO));
-    raw.c_cc[VMIN] = 0;
-    raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0) {
-      return false;
-    }
-    raw_ = true;
-    std::fputs("\033[?1049h\033[?25l", stdout);
-    std::fflush(stdout);
-    alt_ = true;
-    return true;
-  }
-
-  ~Term() { leave(); }
-
-  void leave() {
-    if (alt_) {
-      std::fputs("\033[?25h\033[?1049l", stdout);
-      std::fflush(stdout);
-      alt_ = false;
-    }
-    if (raw_) {
-      tcsetattr(STDIN_FILENO, TCSANOW, &saved_);
-      raw_ = false;
-    }
-  }
-
-  Term() = default;
-  Term(const Term &) = delete;
-  Term &operator=(const Term &) = delete;
-
-  TuiKey read_key(int timeout_ms) {
-    pollfd fd{};
-    fd.fd = STDIN_FILENO;
-    fd.events = POLLIN;
-    const int pr = ::poll(&fd, 1, timeout_ms);
-    if (pr <= 0) {
-      return TuiKey::None;
-    }
-    unsigned char byte = 0;
-    if (::read(STDIN_FILENO, &byte, 1) != 1) {
-      return TuiKey::None;
-    }
-    if (byte != 27) {
-      return map_byte(byte);
-    }
-    fd.revents = 0;
-    if (::poll(&fd, 1, 20) <= 0) {
-      return TuiKey::Stop;
-    }
-    unsigned char seq[6] = {};
-    const ssize_t n = ::read(STDIN_FILENO, seq, sizeof seq);
-    if (n >= 2 && seq[0] == '[') {
-      if (seq[1] == 'A') {
-        return TuiKey::Up;
-      }
-      if (seq[1] == 'B') {
-        return TuiKey::Down;
-      }
-    }
-    return TuiKey::None;
-  }
-
-private:
-  static TuiKey map_byte(unsigned char byte) {
-    switch (byte) {
-    case 'q':
-    case 'Q':
-      return TuiKey::Quit;
-    case '\n':
-    case '\r':
-      return TuiKey::Enter;
-    case 'k':
-    case 'K':
-      return TuiKey::Up;
-    case 'j':
-    case 'J':
-      return TuiKey::Down;
-    case '[':
-      return TuiKey::SqlLoosen;
-    case ']':
-      return TuiKey::SqlTighten;
-    case 's':
-    case 'S':
-      return TuiKey::SqlToggle;
-    case 'm':
-    case 'M':
-      return TuiKey::Mute;
-    case 'g':
-    case 'G':
-      return TuiKey::Group;
-    case '-':
-      return TuiKey::LnaDown;
-    case '=':
-    case '+':
-      return TuiKey::LnaUp;
-    default:
-      return TuiKey::None;
-    }
-  }
-
-  termios saved_{};
-  bool raw_ = false;
-  bool alt_ = false;
+constexpr Group kGroups[] = {
+    {"all", "All"},     {"airband", "Airband"}, {"broadcast", "FM"}, {"marine", "Marine"},
+    {"amateur", "Ham"}, {"pmr", "PMR"},         {"cb", "CB"},        {"shortwave", "Shortwave"},
 };
 
+// Squelch and mute change many times a second while audio plays, so they
+// go straight to the DSP thread as atomics.
 struct Live {
   std::atomic<bool> squelch_on{true};
-  std::atomic<float> squelch_db{-40.0f};
+  std::atomic<float> squelch_db{-52.0f};
   std::atomic<bool> pass_audio{true};
 };
 
-void sync_live(Live &live, const TuiModel &model) {
-  live.squelch_on.store(model.squelch_on, std::memory_order_relaxed);
-  live.squelch_db.store(model.squelch_db, std::memory_order_relaxed);
-  live.pass_audio.store(model.hear, std::memory_order_relaxed);
-}
-
-void window_size(int *rows, int *cols) {
-  winsize size{};
-  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) != 0 || size.ws_row < 8 || size.ws_col < 40) {
-    *rows = 24;
-    *cols = 80;
-    return;
-  }
-  *rows = size.ws_row;
-  *cols = size.ws_col;
-}
-
-void fill_shown(const ChannelBook &book, int group, std::vector<Channel> &out) {
-  const char *want = kGroups[group];
-  out.clear();
-  for (const Channel &channel : book.channels) {
-    if (group == 0 || channel.group == want) {
-      out.push_back(channel);
-    }
-  }
-}
-
-int find_name(const std::vector<Channel> &rows, const std::string &name) {
-  for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
-    if (rows[static_cast<std::size_t>(i)].name == name) {
-      return i;
-    }
-  }
-  return -1;
+void sync_live(Live &live, const Knobs &knobs) {
+  live.squelch_on.store(knobs.squelch_on, std::memory_order_relaxed);
+  live.squelch_db.store(knobs.squelch_db, std::memory_order_relaxed);
+  live.pass_audio.store(!knobs.muted, std::memory_order_relaxed);
 }
 
 const char *mode_label(const std::string &mode) {
@@ -234,292 +72,178 @@ const char *mode_label(const std::string &mode) {
   if (mode == "nfm") {
     return "narrow FM";
   }
-  return "mode";
+  return "?";
 }
 
-// Measured on this radio, amp off, VGA 20, LNA 40. AM opens on LTFM ATIS
-// near -50 dBFS and stays shut on the LNA 16 hiss near -68. Wide FM noise
-// sat near -41, so -32 stays shut. Empty narrow FM sat near -60, so -48
-// stays shut until a radio actually keys up.
-float squelch_for_mode(const std::string &mode) {
-  if (mode == "am") {
-    return -58.0f;
-  }
-  if (mode == "wfm") {
-    return -32.0f;
-  }
-  return -48.0f;
-}
+// Owns the radio thread. start() opens the HackRF for one station,
+// change() retunes or changes gain without closing it, stop() closes it.
+class Receiver {
+public:
+  Receiver(ScreenInteractive *screen, Live *live) : screen_(screen), live_(live) {}
+  ~Receiver() { stop(); }
 
-std::string clip_plain(std::string text, int width) {
-  if (width < 1) {
-    return {};
-  }
-  if (static_cast<int>(text.size()) > width) {
-    text.resize(static_cast<std::size_t>(width));
-  }
-  return text;
-}
+  Receiver(const Receiver &) = delete;
+  Receiver &operator=(const Receiver &) = delete;
 
-struct Screen {
-  TuiModel *model = nullptr;
-  const std::vector<Channel> *shown = nullptr;
-  const Channel *now = nullptr;
-  const ListenView *view = nullptr;
-  const std::string *message = nullptr;
-  int rows = 24;
-  int cols = 80;
+  struct Snapshot {
+    ListenView view;
+    bool have_view = false;
+    bool running = false;
+  };
+
+  // Why the last run ended. Only reported once.
+  struct Ending {
+    bool ended = false;
+    int rc = 0;
+    bool signaled = false;
+  };
+
+  void start(const Channel &station, const Knobs &knobs) {
+    stop();
+    station_ = station;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      view_ = ListenView{};
+      have_view_ = false;
+      running_ = true;
+      ended_ = false;
+      stop_req_ = false;
+      pending_ = false;
+    }
+    thread_ = std::thread([this, knobs] { run(knobs); });
+  }
+
+  void change(const Channel &station, const Knobs &knobs) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!running_) {
+      return;
+    }
+    pending_ = true;
+    change_.channel_hz = station.hz;
+    change_mode_ = station.mode;
+    change_.lna_db = static_cast<std::uint32_t>(knobs.lna);
+    change_.vga_db = static_cast<std::uint32_t>(knobs.vga);
+    change_.amp = knobs.amp;
+  }
+
+  void stop() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stop_req_ = true;
+    }
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    stop_req_ = false;
+    running_ = false;
+    ended_ = false;
+  }
+
+  Snapshot read() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Snapshot snap;
+    snap.view = view_;
+    snap.have_view = have_view_;
+    snap.running = running_;
+    return snap;
+  }
+
+  bool running() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return running_;
+  }
+
+  Ending take_ending() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Ending out;
+    out.ended = ended_;
+    out.rc = rc_;
+    out.signaled = signaled_;
+    ended_ = false;
+    return out;
+  }
+
+private:
+  void run(Knobs knobs) {
+    ListenConfig config;
+    config.channel_hz = station_.hz;
+    config.name = station_.name.c_str();
+    config.mode = station_.mode.c_str();
+    config.group = station_.group.c_str();
+    config.lna_db = static_cast<std::uint32_t>(knobs.lna);
+    config.vga_db = static_cast<std::uint32_t>(knobs.vga);
+    config.amp = knobs.amp;
+    config.speakers = true;
+    config.squelch = knobs.squelch_on;
+    config.squelch_dbfs = knobs.squelch_db;
+    config.on_tick = &Receiver::tick;
+    config.tick_user = this;
+    config.squelch_enabled = &live_->squelch_on;
+    config.squelch_level = &live_->squelch_db;
+    config.pass_audio = &live_->pass_audio;
+    bool signaled = false;
+    config.signal_stop = &signaled;
+    retune_ = ListenRetune{};
+    config.retune = &retune_;
+
+    const int rc = run_listen(config);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      running_ = false;
+      ended_ = true;
+      rc_ = rc;
+      signaled_ = signaled;
+    }
+    screen_->PostEvent(Event::Custom);
+  }
+
+  // Runs on the radio thread about every 50 ms.
+  static bool tick(const ListenView &view, void *user) {
+    auto *self = static_cast<Receiver *>(user);
+    bool keep = true;
+    {
+      std::lock_guard<std::mutex> lock(self->mutex_);
+      self->view_ = view;
+      self->have_view_ = true;
+      if (self->stop_req_) {
+        keep = false;
+      } else if (self->pending_) {
+        self->pending_ = false;
+        // run_listen reads this right after we return, on this same thread.
+        self->retune_mode_ = self->change_mode_;
+        self->retune_ = self->change_;
+        self->retune_.mode = self->retune_mode_.c_str();
+        self->retune_.pending = true;
+      }
+    }
+    self->screen_->PostEvent(Event::Custom);
+    return keep;
+  }
+
+  ScreenInteractive *screen_;
+  Live *live_;
+  std::thread thread_;
+  // Copy of the station the radio was opened on. Its strings back the
+  // config pointers for the whole run, so it never changes mid-run.
+  Channel station_;
+
+  std::mutex mutex_;
+  ListenView view_;
+  bool have_view_ = false;
+  bool running_ = false;
+  bool ended_ = false;
+  bool stop_req_ = false;
+  int rc_ = 0;
+  bool signaled_ = false;
+  bool pending_ = false;
+  ListenRetune change_;
+  std::string change_mode_;
+
+  // Radio-thread side of a change.
+  ListenRetune retune_;
+  std::string retune_mode_;
 };
-
-std::string draw_screen(const Screen &screen) {
-  const TuiModel &model = *screen.model;
-  const int rows = screen.rows;
-  const int cols = screen.cols;
-  const int text_cols = cols > 1 ? cols - 1 : 1;
-  std::vector<std::string> lines;
-  lines.reserve(static_cast<std::size_t>(rows));
-
-  char head[160];
-  std::snprintf(head, sizeof head, "%svocatron%s   group %s   LNA %d   VGA 20   amp off   %s",
-                kCyan, kReset, kGroups[model.group], model.lna,
-                model.hear ? "speaker on" : "muted");
-  lines.push_back(clip_plain(head, text_cols + 16));
-
-  if (screen.now == nullptr) {
-    lines.emplace_back("not tuned");
-    lines.emplace_back("");
-    lines.emplace_back("enter plays the highlighted station");
-    lines.emplace_back("");
-    lines.emplace_back("");
-    lines.emplace_back("");
-  } else {
-    const Channel &now = *screen.now;
-    char title[160];
-    std::snprintf(title, sizeof title, "%s%s%s   %s%.3f MHz%s   %s", kBold, now.name.c_str(),
-                  kReset, kBold, static_cast<double>(now.hz) / 1.0e6, kReset, mode_label(now.mode));
-    lines.push_back(title);
-    lines.push_back(clip_plain(now.description, text_cols));
-
-    const bool have_rf = screen.view != nullptr && screen.view->usb_bytes > 0;
-    std::string gate = "tuning";
-    const char *gate_color = kDim;
-    if (!model.squelch_on) {
-      gate = "gate off";
-      gate_color = kBold;
-    } else if (have_rf) {
-      gate = screen.view->sql_open ? "OPEN" : "SHUT";
-      gate_color = screen.view->sql_open ? kGreen : kDim;
-    }
-    char gate_line[120];
-    std::snprintf(gate_line, sizeof gate_line, "sql %s%s%s   squelch %.0f dBFS%s", gate_color,
-                  gate.c_str(), kReset, static_cast<double>(model.squelch_db),
-                  model.hear ? "" : "   muted");
-    lines.push_back(gate_line);
-
-    const float channel_db = have_rf ? screen.view->channel_dbfs : -200.0f;
-    const std::string bar = level_meter(channel_db, model.squelch_db, 32);
-    char meter[160];
-    if (have_rf) {
-      std::snprintf(meter, sizeof meter, "ch %6.1f  [%s]", static_cast<double>(channel_db),
-                    bar.c_str());
-    } else {
-      std::snprintf(meter, sizeof meter, "ch    --  [%s]", bar.c_str());
-    }
-    lines.push_back(meter);
-
-    char stats[160];
-    if (have_rf) {
-      std::snprintf(stats, sizeof stats, "adc %6.1f   clip %5.2f%%   dropped %llu   underruns %llu",
-                    static_cast<double>(screen.view->adc_dbfs),
-                    static_cast<double>(screen.view->clip_pct),
-                    static_cast<unsigned long long>(screen.view->dropped),
-                    static_cast<unsigned long long>(screen.view->underruns));
-    } else {
-      std::snprintf(stats, sizeof stats, "waiting for samples");
-    }
-    lines.push_back(stats);
-    lines.emplace_back("Gate shut is silence. = raises LNA when a voice is thin.");
-  }
-
-  lines.emplace_back("");
-  lines.emplace_back("  station         MHz      mode  group");
-
-  const int header_lines = static_cast<int>(lines.size());
-  int list_rows = rows - header_lines - 3;
-  if (list_rows < 3) {
-    list_rows = 3;
-  }
-  int scroll = 0;
-  if (model.selected >= list_rows) {
-    scroll = model.selected - list_rows + 1;
-  }
-  const int count = static_cast<int>(screen.shown->size());
-  for (int row = 0; row < list_rows; ++row) {
-    const int index = scroll + row;
-    if (index >= count) {
-      lines.emplace_back("");
-      continue;
-    }
-    const Channel &channel = (*screen.shown)[static_cast<std::size_t>(index)];
-    const bool selected = index == model.selected;
-    const bool playing = model.listening && index == model.playing;
-    char row_text[160];
-    std::snprintf(row_text, sizeof row_text, "%c %-14s %8.3f  %-4s %s", playing ? '>' : ' ',
-                  channel.name.c_str(), static_cast<double>(channel.hz) / 1.0e6,
-                  channel.mode.c_str(), channel.group.c_str());
-    std::string line = clip_plain(row_text, text_cols);
-    if (selected) {
-      line = std::string(kRev) + line + kReset;
-    }
-    lines.push_back(std::move(line));
-  }
-
-  if (screen.message != nullptr && !screen.message->empty()) {
-    lines.push_back(clip_plain(*screen.message, text_cols));
-  } else {
-    lines.emplace_back("");
-  }
-  lines.emplace_back("up/down move    enter tune    [ ] squelch    s gate    m mute");
-  lines.emplace_back("-/= LNA    g group    esc stop    q quit");
-
-  if (static_cast<int>(lines.size()) > rows) {
-    lines.resize(static_cast<std::size_t>(rows));
-  }
-
-  std::string frame;
-  frame.reserve(static_cast<std::size_t>(rows) * 80);
-  frame += "\033[H";
-  for (const std::string &line : lines) {
-    frame += line;
-    frame += "\033[K\n";
-  }
-  frame += "\033[J";
-  return frame;
-}
-
-struct TickBag {
-  TuiModel *model = nullptr;
-  std::vector<Channel> *shown = nullptr;
-  const ChannelBook *book = nullptr;
-  Channel *now = nullptr;
-  Term *term = nullptr;
-  Live *live = nullptr;
-  std::string *message = nullptr;
-  bool *quit = nullptr;
-  // Station changes go here so the radio stays open between stations.
-  ListenRetune *retune = nullptr;
-  int rows = 24;
-  int cols = 80;
-  // [ ] and s keep the user's gate. A new station name clears it.
-  bool squelch_manual = false;
-
-  // Enter on another station, or an LNA step. The playing row may be
-  // hidden by the group filter; then an LNA step keeps the same station.
-  void ask_retune() {
-    if (model->playing >= 0 && model->playing < model->count) {
-      adopt((*shown)[static_cast<std::size_t>(model->playing)]);
-    }
-    retune->pending = true;
-    retune->channel_hz = now->hz;
-    retune->mode = now->mode.c_str();
-    retune->lna_db = static_cast<std::uint32_t>(model->lna);
-    message->clear();
-  }
-
-  void note_squelch_key(TuiKey key) {
-    if (key == TuiKey::SqlLoosen || key == TuiKey::SqlTighten || key == TuiKey::SqlToggle) {
-      squelch_manual = true;
-    }
-  }
-
-  void adopt(const Channel &next) {
-    if (now->name != next.name) {
-      squelch_manual = false;
-    }
-    *now = next;
-    if (!squelch_manual) {
-      model->squelch_on = true;
-      model->squelch_db = squelch_for_mode(now->mode);
-    }
-    sync_live(*live, *model);
-  }
-
-  void apply_group() {
-    const std::string keep =
-        shown->empty() ? std::string() : (*shown)[static_cast<std::size_t>(model->selected)].name;
-    const std::string playing = now->name;
-    apply_tui_key(*model, TuiKey::Group);
-    fill_shown(*book, model->group, *shown);
-    model->count = static_cast<int>(shown->size());
-    const int sel = find_name(*shown, keep);
-    model->selected = sel >= 0 ? sel : 0;
-    if (model->count == 0) {
-      model->selected = 0;
-    }
-    if (model->listening) {
-      model->playing = find_name(*shown, playing);
-    }
-  }
-
-  bool on_view(const ListenView &view) {
-    window_size(&rows, &cols);
-    bool stop = false;
-    for (;;) {
-      const TuiKey key = term->read_key(0);
-      if (key == TuiKey::None) {
-        break;
-      }
-      note_squelch_key(key);
-      TuiAction action = TuiAction::Stay;
-      if (key == TuiKey::Group) {
-        apply_group();
-      } else {
-        action = apply_tui_key(*model, key);
-      }
-      sync_live(*live, *model);
-      if (action == TuiAction::Quit) {
-        *quit = true;
-        stop = true;
-      } else if (action == TuiAction::Retune && retune != nullptr) {
-        ask_retune();
-      } else if (action == TuiAction::Idle || action == TuiAction::Retune ||
-                 action == TuiAction::Listen) {
-        stop = true;
-      }
-    }
-    Screen screen;
-    screen.model = model;
-    screen.shown = shown;
-    screen.now = model->listening ? now : nullptr;
-    screen.view = &view;
-    screen.message = message;
-    screen.rows = rows;
-    screen.cols = cols;
-    const std::string frame = draw_screen(screen);
-    std::fwrite(frame.data(), 1, frame.size(), stdout);
-    std::fflush(stdout);
-    return !stop;
-  }
-};
-
-bool tick_thunk(const ListenView &view, void *user) {
-  return static_cast<TickBag *>(user)->on_view(view);
-}
-
-void paint(TickBag &bag, const ListenView *view) {
-  window_size(&bag.rows, &bag.cols);
-  Screen screen;
-  screen.model = bag.model;
-  screen.shown = bag.shown;
-  screen.now = bag.model->listening && !bag.now->name.empty() ? bag.now : nullptr;
-  screen.view = view;
-  screen.message = bag.message;
-  screen.rows = bag.rows;
-  screen.cols = bag.cols;
-  const std::string frame = draw_screen(screen);
-  std::fwrite(frame.data(), 1, frame.size(), stdout);
-  std::fflush(stdout);
-}
 
 } // namespace
 
@@ -538,133 +262,365 @@ int run_tui() {
     return 2;
   }
 
-  g_tui_stop = 0;
-  TuiSignals signals;
-  Term term;
-  if (!term.enter()) {
-    std::fprintf(stderr, "could not set the terminal\n");
-    return 2;
-  }
+  auto screen = ScreenInteractive::Fullscreen();
+  // Ctrl-C closes the radio cleanly instead of killing the program.
+  screen.ForceHandleCtrlC(false);
 
-  std::vector<Channel> shown;
-  TuiModel model;
-  model.groups = kGroupCount;
-  model.group = 0;
-  model.squelch_on = true;
-  model.hear = true;
-  model.lna = 40;
-  fill_shown(book, model.group, shown);
-  model.count = static_cast<int>(shown.size());
-  const int atis = find_name(shown, "LTFM_ATIS");
-  const int pmr = find_name(shown, "PMR1");
-  if (atis >= 0) {
-    model.selected = atis;
-  } else if (pmr >= 0) {
-    model.selected = pmr;
-  } else {
-    model.selected = 0;
-  }
-  model.playing = model.selected;
-  model.listening = model.count > 0;
-
-  Channel now;
   Live live;
+  Receiver receiver(&screen, &live);
+  Knobs knobs;
+
+  // --- Station list -------------------------------------------------------
+  int group_index = 0;
+  std::vector<std::string> group_labels;
+  for (const Group &group : kGroups) {
+    group_labels.emplace_back(group.label);
+  }
+  std::vector<Channel> shown;
+  std::vector<std::string> rows;
+  int selected = 0;
+  Channel now; // what is playing; empty name when stopped
   std::string message;
-  bool quit = false;
 
-  TickBag bag;
-  bag.model = &model;
-  bag.shown = &shown;
-  bag.book = &book;
-  bag.now = &now;
-  bag.term = &term;
-  bag.live = &live;
-  bag.message = &message;
-  bag.quit = &quit;
-  ListenRetune retune;
-  bag.retune = &retune;
-  if (model.count > 0) {
-    bag.adopt(shown[static_cast<std::size_t>(model.selected)]);
-  } else {
-    sync_live(live, model);
-  }
+  auto fill_rows = [&] {
+    rows.clear();
+    for (const Channel &channel : shown) {
+      char row[96];
+      const bool playing = receiver.running() && channel.name == now.name;
+      std::snprintf(row, sizeof row, "%s %-14s %8.3f", playing ? "▶" : " ", channel.name.c_str(),
+                    static_cast<double>(channel.hz) / 1.0e6);
+      rows.emplace_back(row);
+    }
+  };
+  auto fill_shown = [&] {
+    const std::string keep =
+        selected >= 0 && selected < static_cast<int>(shown.size()) ? shown[selected].name : "";
+    shown.clear();
+    const char *want = kGroups[group_index].key;
+    for (const Channel &channel : book.channels) {
+      if (group_index == 0 || channel.group == want) {
+        shown.push_back(channel);
+      }
+    }
+    selected = 0;
+    for (int i = 0; i < static_cast<int>(shown.size()); ++i) {
+      if (shown[static_cast<std::size_t>(i)].name == keep) {
+        selected = i;
+      }
+    }
+    fill_rows();
+  };
 
-  while (!quit && g_tui_stop == 0) {
-    if (!model.listening || now.name.empty()) {
-      paint(bag, nullptr);
-      const TuiKey key = term.read_key(200);
-      if (g_tui_stop != 0) {
-        break;
-      }
-      if (key == TuiKey::None) {
-        continue;
-      }
-      bag.note_squelch_key(key);
-      TuiAction action = TuiAction::Stay;
-      if (key == TuiKey::Group) {
-        bag.apply_group();
-      } else {
-        action = apply_tui_key(model, key);
-      }
-      sync_live(live, model);
-      if (action == TuiAction::Quit) {
-        break;
-      }
-      if (action == TuiAction::Listen || action == TuiAction::Retune) {
-        if (model.count > 0) {
-          bag.adopt(shown[static_cast<std::size_t>(model.selected)]);
-          model.playing = model.selected;
-          model.listening = true;
-          message.clear();
-        }
-      }
-      continue;
-    }
-
-    paint(bag, nullptr);
-    ListenConfig config;
-    config.channel_hz = now.hz;
-    config.name = now.name.c_str();
-    config.mode = now.mode.c_str();
-    config.group = now.group.c_str();
-    config.seconds = 0;
-    config.lna_db = static_cast<std::uint32_t>(model.lna);
-    config.vga_db = 20;
-    config.amp = false;
-    config.speakers = true;
-    config.squelch = model.squelch_on;
-    config.squelch_dbfs = model.squelch_db;
-    config.on_tick = tick_thunk;
-    config.tick_user = &bag;
-    config.squelch_enabled = &live.squelch_on;
-    config.squelch_level = &live.squelch_db;
-    config.pass_audio = &live.pass_audio;
-    bool signaled = false;
-    config.signal_stop = &signaled;
-    config.retune = &retune;
-    retune.pending = false;
-
-    const int rc = run_listen(config);
-    if (g_tui_stop != 0 || signaled) {
-      break;
-    }
-    if (quit) {
-      break;
-    }
-    if (rc != 0) {
-      model.listening = false;
-      model.playing = -1;
-      message = "Receiver stopped. Is the HackRF free? Enter tries again.";
-      continue;
-    }
-    if (!model.listening) {
-      continue;
-    }
-    if (model.playing >= 0 && model.playing < model.count) {
-      bag.adopt(shown[static_cast<std::size_t>(model.playing)]);
-    }
+  // --- Actions ------------------------------------------------------------
+  auto tune = [&](const Channel &station) {
+    const bool same = station.name == now.name;
+    enter_station(knobs, station.mode, same);
+    sync_live(live, knobs);
     message.clear();
+    if (receiver.running()) {
+      receiver.change(station, knobs);
+    } else {
+      receiver.start(station, knobs);
+    }
+    now = station;
+    fill_rows();
+  };
+  auto tune_selected = [&] {
+    if (selected >= 0 && selected < static_cast<int>(shown.size())) {
+      tune(shown[static_cast<std::size_t>(selected)]);
+    }
+  };
+  // Gain and amp go to the radio; nothing to do when it is stopped.
+  auto push_gain = [&] {
+    if (!now.name.empty()) {
+      receiver.change(now, knobs);
+    }
+  };
+  auto stop_radio = [&] {
+    receiver.stop();
+    knobs.amp = false;
+    fill_rows();
+  };
+  auto quit = [&] {
+    receiver.stop();
+    screen.Exit();
+  };
+
+  // --- Components ---------------------------------------------------------
+  MenuOption tab_option = MenuOption::Toggle();
+  tab_option.entries = &group_labels;
+  tab_option.selected = &group_index;
+  tab_option.on_change = [&] { fill_shown(); };
+  Component tabs = Menu(tab_option);
+
+  MenuOption list_option = MenuOption::Vertical();
+  list_option.entries = &rows;
+  list_option.selected = &selected;
+  list_option.on_enter = tune_selected;
+  Component list = Menu(list_option);
+  Box list_box;
+  // A click picks the row (the menu does that) and then tunes it.
+  Component list_click = CatchEvent(list, [&](Event event) {
+    if (event.is_mouse() && event.mouse().button == Mouse::Left &&
+        event.mouse().motion == Mouse::Pressed &&
+        list_box.Contain(event.mouse().x, event.mouse().y)) {
+      list->OnEvent(event);
+      tune_selected();
+      return true;
+    }
+    return false;
+  });
+
+  const ButtonOption flat = ButtonOption::Ascii();
+  auto lna_step = [&](int direction) {
+    if (step_lna(knobs, direction)) {
+      push_gain();
+    }
+  };
+  auto vga_step = [&](int direction) {
+    if (step_vga(knobs, direction)) {
+      push_gain();
+    }
+  };
+  Component lna_down = Button(" − ", [&] { lna_step(-1); }, flat);
+  Component lna_up = Button(" + ", [&] { lna_step(+1); }, flat);
+  Component vga_down = Button(" − ", [&] { vga_step(-1); }, flat);
+  Component vga_up = Button(" + ", [&] { vga_step(+1); }, flat);
+  std::string amp_label;
+  Component amp_button = Button(
+      &amp_label,
+      [&] {
+        knobs.amp = !knobs.amp;
+        message = knobs.amp ? "RF amp ON. If clip goes above 0, it turns itself off." : "";
+        push_gain();
+      },
+      flat);
+  Component sql_down = Button(
+      " − ",
+      [&] {
+        step_squelch(knobs, -1);
+        sync_live(live, knobs);
+      },
+      flat);
+  Component sql_up = Button(
+      " + ",
+      [&] {
+        step_squelch(knobs, +1);
+        sync_live(live, knobs);
+      },
+      flat);
+  std::string gate_label;
+  Component gate_button = Button(
+      &gate_label,
+      [&] {
+        toggle_squelch(knobs);
+        sync_live(live, knobs);
+      },
+      flat);
+  std::string mute_label;
+  Component mute_button = Button(
+      &mute_label,
+      [&] {
+        knobs.muted = !knobs.muted;
+        sync_live(live, knobs);
+      },
+      flat);
+  std::string play_label;
+  Component play_button = Button(
+      &play_label,
+      [&] {
+        if (receiver.running()) {
+          stop_radio();
+        } else if (!now.name.empty()) {
+          tune(now);
+        } else {
+          tune_selected();
+        }
+      },
+      flat);
+  Component quit_button = Button(" Quit ", quit, flat);
+
+  Component controls = Container::Vertical({
+      Container::Horizontal({lna_down, lna_up}),
+      Container::Horizontal({vga_down, vga_up}),
+      amp_button,
+      Container::Horizontal({sql_down, sql_up, gate_button}),
+      Container::Horizontal({mute_button, play_button, quit_button}),
+  });
+  Component body = Container::Horizontal({list_click, controls});
+  Component layout = Container::Vertical({tabs, body});
+
+  Component view = Renderer(layout, [&] {
+    const Receiver::Snapshot snap = receiver.read();
+    const ListenView &v = snap.view;
+    const bool live_rf = snap.running && snap.have_view && v.usb_bytes > 0;
+
+    amp_label = knobs.amp ? " ON " : " OFF ";
+    gate_label = knobs.squelch_on ? " gate on " : " gate off ";
+    mute_label = knobs.muted ? " Unmute " : " Mute ";
+    play_label = snap.running ? " Stop " : " Play ";
+
+    // What is happening, in words.
+    std::string sound = "stopped";
+    Color sound_color = Color::GrayDark;
+    if (snap.running && !live_rf) {
+      sound = "starting…";
+    } else if (snap.running && knobs.muted) {
+      sound = "muted";
+      sound_color = Color::Yellow;
+    } else if (snap.running && !knobs.squelch_on) {
+      sound = "playing (gate off)";
+      sound_color = Color::Green;
+    } else if (snap.running && v.sql_open) {
+      sound = "playing";
+      sound_color = Color::Green;
+    } else if (snap.running) {
+      sound = "quiet channel, gate shut";
+    }
+
+    Elements info;
+    if (now.name.empty()) {
+      info.push_back(text("Click a station to listen.") | bold);
+    } else {
+      char line[160];
+      std::snprintf(line, sizeof line, "%.3f MHz · %s · %s", static_cast<double>(now.hz) / 1.0e6,
+                    mode_label(now.mode), now.group.c_str());
+      info.push_back(text(now.name) | bold);
+      info.push_back(text(line));
+      info.push_back(paragraph(now.description) | dim);
+    }
+    info.push_back(separatorEmpty());
+
+    char db[32];
+    std::snprintf(db, sizeof db, live_rf ? " %6.1f dBFS" : "     -- dBFS",
+                  static_cast<double>(v.channel_dbfs));
+    const float fill = live_rf ? signal_fill(v.channel_dbfs) : 0.0f;
+    const Color bar_color = !live_rf           ? Color::GrayDark
+                            : v.sql_open       ? Color::Green
+                            : knobs.squelch_on ? Color::Yellow
+                                               : Color::Green;
+    info.push_back(hbox({text("Signal  "), gauge(fill) | color(bar_color) | flex, text(db)}));
+    info.push_back(hbox({text("Sound   "), text(sound) | color(sound_color)}));
+    info.push_back(separatorEmpty());
+
+    char value[32];
+    std::snprintf(value, sizeof value, " %2d dB ", knobs.lna);
+    info.push_back(hbox({text("Gain    "), lna_down->Render(), text(value), lna_up->Render(),
+                         text("  LNA, the main one") | dim}));
+    std::snprintf(value, sizeof value, " %2d dB ", knobs.vga);
+    info.push_back(hbox({text("VGA     "), vga_down->Render(), text(value), vga_up->Render(),
+                         text("  after the mixer") | dim}));
+    Element amp = amp_button->Render();
+    if (knobs.amp) {
+      amp = hbox(
+          {amp | color(Color::Red) | bold, text("  +11 dB at the antenna") | color(Color::Red)});
+    } else {
+      amp = hbox({amp, text("  off is safest") | dim});
+    }
+    info.push_back(hbox({text("RF amp  "), amp}));
+    std::snprintf(value, sizeof value, " %4.0f dBFS ", static_cast<double>(knobs.squelch_db));
+    info.push_back(hbox({text("Squelch "), sql_down->Render(), text(value), sql_up->Render(),
+                         text(" "), gate_button->Render()}));
+    info.push_back(separatorEmpty());
+    info.push_back(hbox({mute_button->Render(), text("  "), play_button->Render(), text("  "),
+                         quit_button->Render()}));
+    info.push_back(filler());
+
+    if (live_rf) {
+      char stats[160];
+      std::snprintf(stats, sizeof stats, "adc %.1f dBFS · clip %.2f%% · dropped %llu · gaps %llu",
+                    static_cast<double>(v.adc_dbfs), static_cast<double>(v.clip_pct),
+                    static_cast<unsigned long long>(v.dropped),
+                    static_cast<unsigned long long>(v.underruns));
+      info.push_back(text(stats) | dim);
+    }
+    if (!message.empty()) {
+      info.push_back(paragraph(message) | color(Color::Yellow));
+    }
+
+    Element station_list = list->Render() | vscroll_indicator | frame | reflect(list_box);
+    return vbox({
+               hbox({text(" vocatron  ") | bold | color(Color::Cyan), tabs->Render()}),
+               separator(),
+               hbox({station_list | size(WIDTH, EQUAL, 28), separator(), vbox(info) | flex}) | flex,
+               separator(),
+               text(" click a station · ↑↓ Enter · = − gain · [ ] squelch · m mute · "
+                    "esc stop · q quit") |
+                   dim,
+           }) |
+           border;
+  });
+
+  // Keyboard shortcuts, and housekeeping on each refresh from the radio.
+  Component root = CatchEvent(view, [&](Event event) {
+    if (event == Event::Custom) {
+      const Receiver::Snapshot snap = receiver.read();
+      const Receiver::Ending ending = receiver.take_ending();
+      if (ending.ended) {
+        if (ending.signaled) {
+          quit();
+          return true;
+        }
+        if (ending.rc != 0) {
+          message = "The receiver stopped. Is the HackRF plugged in and free? Click a station "
+                    "to try again.";
+        }
+        knobs.amp = false;
+        fill_rows();
+      }
+      if (snap.running && amp_should_drop(knobs, snap.view.clip_pct)) {
+        knobs.amp = false;
+        push_gain();
+        message = "RF amp turned off: the input was clipping.";
+      }
+      return false;
+    }
+    if (event == Event::CtrlC || event == Event::Character('q')) {
+      quit();
+      return true;
+    }
+    if (event == Event::Escape) {
+      stop_radio();
+      return true;
+    }
+    if (event == Event::Character('m')) {
+      knobs.muted = !knobs.muted;
+      sync_live(live, knobs);
+      return true;
+    }
+    if (event == Event::Character('=') || event == Event::Character('+')) {
+      lna_step(+1);
+      return true;
+    }
+    if (event == Event::Character('-')) {
+      lna_step(-1);
+      return true;
+    }
+    if (event == Event::Character('[') || event == Event::Character(']')) {
+      step_squelch(knobs, event == Event::Character(']') ? +1 : -1);
+      sync_live(live, knobs);
+      return true;
+    }
+    if (event == Event::Character('s')) {
+      toggle_squelch(knobs);
+      sync_live(live, knobs);
+      return true;
+    }
+    return false;
+  });
+
+  // Start on the airport loop, which is on the air around the clock.
+  fill_shown();
+  for (int i = 0; i < static_cast<int>(shown.size()); ++i) {
+    if (shown[static_cast<std::size_t>(i)].name == "LTFM_ATIS") {
+      selected = i;
+    }
   }
+  list->TakeFocus();
+  tune_selected();
+
+  screen.Loop(root);
+  receiver.stop();
   return 0;
 }
 

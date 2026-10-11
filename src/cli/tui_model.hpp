@@ -1,154 +1,123 @@
 #pragma once
 
-// Key logic for the station screen. No radio and no terminal, so tests can
-// press the same keys the screen does.
+// The knobs on the station screen, as plain values. No radio and no
+// terminal, so tests can turn the same knobs the screen does.
 
-#include <cstdint>
 #include <string>
 
 namespace vocatron {
 
-enum class TuiKey {
-  None,
-  Up,
-  Down,
-  Enter,
-  Quit,
-  Stop,
-  SqlToggle,
-  SqlLoosen,
-  SqlTighten,
-  Mute,
-  Group,
-  LnaDown,
-  LnaUp,
-};
-
-enum class TuiAction { Stay, Quit, Listen, Retune, Idle };
-
-struct TuiModel {
-  int count = 0;
-  int selected = 0;
-  int playing = -1;
-  bool listening = false;
-  float squelch_db = -40.0f;
+struct Knobs {
+  // LNA: the first amplifier, 0 to 40 dB in steps of 8. More LNA lifts a
+  // weak station above the radio's own hiss.
+  int lna = 40;
+  // VGA: the second amplifier, after the mixer. 0 to 26 dB in steps of 2.
+  // This firmware stops sending samples above 26.
+  int vga = 26;
+  // RF amp: about 11 dB more, right at the antenna. Off unless turned on.
+  bool amp = false;
   bool squelch_on = true;
-  bool hear = true;
-  int groups = 1;
-  int group = 0;
-  int lna = 16;
+  float squelch_db = -52.0f;
+  bool muted = false;
+  // [ ] and the gate switch keep the person's squelch until the station changes.
+  bool squelch_manual = false;
 };
 
-inline TuiAction apply_tui_key(TuiModel &model, TuiKey key) {
-  switch (key) {
-  case TuiKey::Quit:
-    return TuiAction::Quit;
-  case TuiKey::Stop:
-    if (!model.listening) {
-      return TuiAction::Stay;
-    }
-    model.listening = false;
-    model.playing = -1;
-    return TuiAction::Idle;
-  case TuiKey::Up:
-    if (model.count > 0) {
-      model.selected = (model.selected + model.count - 1) % model.count;
-    }
-    return TuiAction::Stay;
-  case TuiKey::Down:
-    if (model.count > 0) {
-      model.selected = (model.selected + 1) % model.count;
-    }
-    return TuiAction::Stay;
-  case TuiKey::Enter:
-    if (model.count <= 0) {
-      return TuiAction::Stay;
-    }
-    if (model.listening && model.playing == model.selected) {
-      return TuiAction::Stay;
-    }
-    {
-      const bool was = model.listening;
-      model.playing = model.selected;
-      model.listening = true;
-      return was ? TuiAction::Retune : TuiAction::Listen;
-    }
-  case TuiKey::SqlToggle:
-    model.squelch_on = !model.squelch_on;
-    return TuiAction::Stay;
-  case TuiKey::SqlLoosen:
-    model.squelch_db -= 2.0f;
-    if (model.squelch_db < -120.0f) {
-      model.squelch_db = -120.0f;
-    }
-    return TuiAction::Stay;
-  case TuiKey::SqlTighten:
-    model.squelch_db += 2.0f;
-    if (model.squelch_db > 0.0f) {
-      model.squelch_db = 0.0f;
-    }
-    return TuiAction::Stay;
-  case TuiKey::Mute:
-    model.hear = !model.hear;
-    return TuiAction::Stay;
-  case TuiKey::Group:
-    if (model.groups > 0) {
-      model.group = (model.group + 1) % model.groups;
-    }
-    model.selected = 0;
-    return TuiAction::Stay;
-  case TuiKey::LnaDown:
-    if (model.lna >= 8) {
-      model.lna -= 8;
-      return model.listening ? TuiAction::Retune : TuiAction::Stay;
-    }
-    return TuiAction::Stay;
-  case TuiKey::LnaUp:
-    if (model.lna <= 32) {
-      model.lna += 8;
-      return model.listening ? TuiAction::Retune : TuiAction::Stay;
-    }
-    return TuiAction::Stay;
-  case TuiKey::None:
-    return TuiAction::Stay;
+constexpr int kLnaMax = 40;
+constexpr int kLnaStep = 8;
+constexpr int kVgaMax = 26;
+constexpr int kVgaStep = 2;
+constexpr float kSquelchStep = 2.0f;
+constexpr float kSquelchMin = -120.0f;
+constexpr float kSquelchMax = 0.0f;
+
+// Each returns true when the value changed.
+inline bool step_lna(Knobs &knobs, int direction) {
+  const int next = knobs.lna + direction * kLnaStep;
+  if (next < 0 || next > kLnaMax) {
+    return false;
   }
-  return TuiAction::Stay;
+  knobs.lna = next;
+  return true;
 }
 
-// Bar from -90 dBFS to 0. '#' is the channel. '|' is the squelch mark.
-inline std::string level_meter(float channel_dbfs, float mark_dbfs, int width) {
-  if (width < 3) {
-    width = 3;
+inline bool step_vga(Knobs &knobs, int direction) {
+  const int next = knobs.vga + direction * kVgaStep;
+  if (next < 0 || next > kVgaMax) {
+    return false;
   }
-  if (width > 64) {
-    width = 64;
+  knobs.vga = next;
+  return true;
+}
+
+inline bool step_squelch(Knobs &knobs, int direction) {
+  float next = knobs.squelch_db + static_cast<float>(direction) * kSquelchStep;
+  if (next < kSquelchMin) {
+    next = kSquelchMin;
   }
-  auto slot = [width](float db) {
-    float t = (db + 90.0f) / 90.0f;
-    if (t < 0.0f) {
-      t = 0.0f;
-    }
-    if (t > 1.0f) {
-      t = 1.0f;
-    }
-    int index = static_cast<int>(t * static_cast<float>(width - 1) + 0.5f);
-    if (index < 0) {
-      index = 0;
-    }
-    if (index >= width) {
-      index = width - 1;
-    }
-    return index;
-  };
-  std::string bar(static_cast<std::size_t>(width), '.');
-  if (channel_dbfs > -190.0f) {
-    const int level = slot(channel_dbfs);
-    for (int i = 0; i <= level; ++i) {
-      bar[static_cast<std::size_t>(i)] = '#';
-    }
+  if (next > kSquelchMax) {
+    next = kSquelchMax;
   }
-  bar[static_cast<std::size_t>(slot(mark_dbfs))] = '|';
-  return bar;
+  knobs.squelch_manual = true;
+  if (next == knobs.squelch_db) {
+    return false;
+  }
+  knobs.squelch_db = next;
+  return true;
+}
+
+inline void toggle_squelch(Knobs &knobs) {
+  knobs.squelch_on = !knobs.squelch_on;
+  knobs.squelch_manual = true;
+}
+
+// Where the gate starts for each mode. Measured on this radio at the
+// screen's default gain (LNA 40, VGA 26, amp off), 2026-10-11:
+// AM: empty channels -60 to -61, ATIS -34. Narrow FM: empty -56 to -62.
+// Wide FM: stations -30 to -36, about where empty FM noise sits, so a level
+// gate cannot tell them apart. Broadcast never pauses, so its gate starts off.
+inline float squelch_for_mode(const std::string &mode) {
+  if (mode == "am") {
+    return -52.0f;
+  }
+  if (mode == "wfm") {
+    return -32.0f;
+  }
+  return -48.0f;
+}
+
+inline bool squelch_starts_on(const std::string &mode) { return mode != "wfm"; }
+
+// A new station gets its mode's gate, unless the person set one by hand
+// for the same station.
+inline void enter_station(Knobs &knobs, const std::string &mode, bool same_station) {
+  if (!same_station) {
+    knobs.squelch_manual = false;
+  }
+  if (!knobs.squelch_manual) {
+    knobs.squelch_on = squelch_starts_on(mode);
+    knobs.squelch_db = squelch_for_mode(mode);
+  }
+}
+
+// 0 to 1 for a signal bar from -90 dBFS (empty) to 0 dBFS (full scale).
+inline float signal_fill(float channel_dbfs) {
+  float fill = (channel_dbfs + 90.0f) / 90.0f;
+  if (fill < 0.0f) {
+    fill = 0.0f;
+  }
+  if (fill > 1.0f) {
+    fill = 1.0f;
+  }
+  return fill;
+}
+
+// With the amp on, any clipping means the input is too strong for it.
+// The screen turns the amp off by itself above this.
+constexpr float kAmpClipLimitPct = 0.5f;
+
+inline bool amp_should_drop(const Knobs &knobs, float clip_pct) {
+  return knobs.amp && clip_pct > kAmpClipLimitPct;
 }
 
 } // namespace vocatron

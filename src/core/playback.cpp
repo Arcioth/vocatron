@@ -17,20 +17,11 @@ void on_audio(ma_device *device, void *output, const void * /*input*/, ma_uint32
     return;
   }
   auto *user = static_cast<PlaybackUser *>(device->pUserData);
-  if (user == nullptr || user->ring == nullptr) {
+  if (user == nullptr) {
     std::memset(dst, 0, static_cast<std::size_t>(frame_count) * sizeof(float));
     return;
   }
-  const std::size_t n = user->ring->try_read(dst, frame_count);
-  if (n > 0 && user->played != nullptr) {
-    user->played->fetch_add(n, std::memory_order_relaxed);
-  }
-  if (n < frame_count) {
-    std::memset(dst + n, 0, (static_cast<std::size_t>(frame_count) - n) * sizeof(float));
-    if (user->underruns != nullptr) {
-      user->underruns->fetch_add(1, std::memory_order_relaxed);
-    }
-  }
+  playback_fill(*user, dst, frame_count);
 }
 
 ma_backend backend_from_name(const char *which) {
@@ -56,6 +47,33 @@ void preload_pulse() {
 }
 
 } // namespace
+
+void playback_fill(PlaybackUser &user, float *dst, std::size_t frames) {
+  if (user.ring == nullptr) {
+    std::memset(dst, 0, frames * sizeof(float));
+    return;
+  }
+  if (user.priming) {
+    if (user.ring->size_approx() < user.prime_frames) {
+      std::memset(dst, 0, frames * sizeof(float));
+      return;
+    }
+    user.priming = false;
+  }
+  const std::size_t n = user.ring->try_read(dst, frames);
+  if (n > 0 && user.played != nullptr) {
+    user.played->fetch_add(n, std::memory_order_relaxed);
+  }
+  if (n < frames) {
+    std::memset(dst + n, 0, (frames - n) * sizeof(float));
+    // Ran dry. Go quiet until the cushion is back, so the next lump of
+    // audio plays smoothly instead of stuttering at the edge.
+    user.priming = user.prime_frames > 0;
+    if (user.underruns != nullptr) {
+      user.underruns->fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+}
 
 struct Speakers::Impl {
   ma_context context{};

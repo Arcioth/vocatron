@@ -10,6 +10,8 @@ find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 pkg_check_modules(LIBHACKRF REQUIRED IMPORTED_TARGET libhackrf)
 pkg_check_modules(FFTW3F REQUIRED IMPORTED_TARGET fftw3f)
+# Station screen: layout, buttons, and mouse clicks in the terminal.
+find_package(ftxui 6 REQUIRED)
 
 # C, not C++. miniaudio's PulseAudio code does not compile as C++ when it
 # calls libpulse directly (enum conversions).
@@ -31,7 +33,7 @@ add_executable(vocatron
 target_include_directories(vocatron PRIVATE src)
 target_include_directories(vocatron SYSTEM PRIVATE third_party)
 target_link_libraries(vocatron PRIVATE PkgConfig::LIBHACKRF PkgConfig::FFTW3F Threads::Threads liquid
-                                      miniaudio)
+                                      miniaudio ftxui::component ftxui::dom ftxui::screen)
 
 add_executable(vocatron_tests
                tests/ring_test.cpp

@@ -43,6 +43,12 @@ constexpr float kShiftHz = 250'000.0f;
 // transfers that were already in flight from the old frequency and the
 // tuner settling. The demodulator then mutes its own first 50 ms.
 constexpr std::size_t kSettleBytes = 1u << 18;
+// Audio cushion before the speaker plays: 150 ms at 48 kHz. Big enough to
+// ride over one late USB lump, small enough that a station change feels quick.
+constexpr std::size_t kPrimeFrames = 7200;
+// If the radio's clock runs a little fast, audio would pile up and the delay
+// would grow. Past half a second, new audio is dropped instead.
+constexpr std::size_t kMaxQueuedFrames = 24000;
 
 volatile std::sig_atomic_t g_stop = 0;
 
@@ -374,6 +380,7 @@ int run_listen(const ListenConfig &config) {
   playback.ring = &audio_ring;
   playback.underruns = &underruns;
   playback.played = &played;
+  playback.prime_frames = kPrimeFrames;
   Speakers speakers;
   const char *backend = "";
   if (config.speakers) {
@@ -528,7 +535,9 @@ int run_listen(const ListenConfig &config) {
         recorded.insert(recorded.end(), gained.begin(),
                         gained.begin() + static_cast<std::ptrdiff_t>(take));
       }
-      if (config.speakers && got > 0) {
+      if (config.speakers && got > 0 && audio_ring.size_approx() > kMaxQueuedFrames) {
+        levels.audio_dropped.fetch_add(got, std::memory_order_relaxed);
+      } else if (config.speakers && got > 0) {
         const std::size_t wrote = audio_ring.try_write(gained.data(), got);
         if (wrote < got) {
           levels.audio_dropped.fetch_add(got - wrote, std::memory_order_relaxed);
@@ -572,8 +581,8 @@ int run_listen(const ListenConfig &config) {
   if (config.speakers) {
     const auto prefill_deadline = t0 + std::chrono::milliseconds(500);
     auto next_publish = t0;
-    while (audio_ring.size_approx() < 2400 && std::chrono::steady_clock::now() < prefill_deadline &&
-           g_stop == 0 && !stop_now) {
+    while (audio_ring.size_approx() < kPrimeFrames &&
+           std::chrono::steady_clock::now() < prefill_deadline && g_stop == 0 && !stop_now) {
       const auto pre_now = std::chrono::steady_clock::now();
       if (pre_now >= next_publish) {
         next_publish = pre_now + std::chrono::milliseconds(50);
@@ -600,23 +609,56 @@ int run_listen(const ListenConfig &config) {
   // Move the tuner and LNA while the stream keeps running, then tell the
   // DSP thread to swap demodulators. The radio and speakers stay open.
   bool failed = false;
+  // Station and gains in effect right now, so a gain-only change can skip
+  // rebuilding the demodulator.
+  std::uint64_t tuned_hz = config.channel_hz;
+  Demod tuned_demod = demod;
+  std::uint32_t tuned_lna = config.lna_db;
+  std::uint32_t tuned_vga = config.vga_db;
+  bool tuned_amp = config.amp;
   auto apply_retune = [&](ListenRetune &retune) -> bool {
     retune.pending = false;
     Demod next = Demod::Wfm;
     if (!parse_demod(retune.mode, &next) || retune.channel_hz <= kLoOffsetHz ||
-        retune.lna_db > 40 || retune.lna_db % 8 != 0) {
+        retune.lna_db > 40 || retune.lna_db % 8 != 0 || retune.vga_db > 26 ||
+        retune.vga_db % 2 != 0) {
       return false;
     }
+    const bool new_station = retune.channel_hz != tuned_hz || next != tuned_demod;
     // A recording is one station from start to end.
-    if (config.out_path != nullptr) {
+    if (new_station && config.out_path != nullptr) {
       return false;
     }
-    if (!check_call("hackrf_set_freq", hackrf_set_freq(dev, retune.channel_hz - kLoOffsetHz)) ||
+    if (new_station &&
+        !check_call("hackrf_set_freq", hackrf_set_freq(dev, retune.channel_hz - kLoOffsetHz))) {
+      return false;
+    }
+    if (retune.lna_db != tuned_lna &&
         !check_call("hackrf_set_lna_gain", hackrf_set_lna_gain(dev, retune.lna_db))) {
       return false;
     }
-    want_demod.store(static_cast<int>(next), std::memory_order_relaxed);
-    tune_gen.fetch_add(1, std::memory_order_release);
+    if (retune.vga_db != tuned_vga &&
+        !check_call("hackrf_set_vga_gain", hackrf_set_vga_gain(dev, retune.vga_db))) {
+      return false;
+    }
+    // The amp only turns on here when the caller asked for it explicitly.
+    if (retune.amp != tuned_amp &&
+        !check_call("hackrf_set_amp_enable", hackrf_set_amp_enable(dev, retune.amp ? 1 : 0))) {
+      return false;
+    }
+    tuned_hz = retune.channel_hz;
+    tuned_demod = next;
+    tuned_lna = retune.lna_db;
+    tuned_vga = retune.vga_db;
+    tuned_amp = retune.amp;
+    if (new_station) {
+      want_demod.store(static_cast<int>(next), std::memory_order_relaxed);
+      tune_gen.fetch_add(1, std::memory_order_release);
+    } else {
+      // Same station, new gain. Clip % should describe the new setting.
+      levels.clip_samples.store(0, std::memory_order_relaxed);
+      levels.total_samples.store(0, std::memory_order_relaxed);
+    }
     return true;
   };
 

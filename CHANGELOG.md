@@ -13,6 +13,13 @@
 - RF: the USB-C adapter chain raised the airband floor about 5 dB. With a
   direct cable at spot 1, ATIS reads −35.5 dBFS. FM is still weak on the
   25 cm whip. Details in HANDOFF.md.
+- First live wide FM: music on 103.0 and KRAL FM 92.0.
+- Station screen rebuilt with FTXUI: mouse clicks, group tabs, buttons for
+  gain, VGA, RF amp (off at start, turns itself off on clipping), squelch,
+  mute, stop/play. Starts at LNA 40 / VGA 26. Gate starts at −52 dBFS for
+  AM, −48 for narrow FM, off for broadcast FM.
+- Audio gaps fixed: playback keeps a 150 ms cushion and refills it after
+  running dry, instead of 50 ms with no refill.
 
 ## 2026-10-09
 

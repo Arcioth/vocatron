@@ -261,6 +261,36 @@ A scripted run went LTFM_ATIS → LTFJ_ATIS → IST_APP → LNA 32 with dropped 
 and no restart (the underrun count kept rising, 0 → 5 → 13, which is the
 muted settle gap). Debug tests: 19 cases, 10172 assertions.
 
+## Station screen rebuilt (2026-10-11)
+
+`vocatron tui` is now FTXUI: group tabs, a clickable station list, and
+buttons for Gain, VGA, RF amp, Squelch, Mute, Stop/Play, Quit. The radio
+runs in its own thread (`Receiver` in `tui.cpp`, wrapping `run_listen`).
+The screen sends `ListenRetune` changes and reads a `ListenView` about 20
+times a second. Gain-only changes set the hardware without rebuilding the
+demodulator. The RF amp is off at start and after Stop. It turns itself off
+when clip goes above 0.5%.
+
+Audio gaps: the user's screen showed `underruns 456`. Playback waited for
+only 50 ms of audio and never refilled after running dry. It now waits for
+a 150 ms cushion and refills it after any gap (`playback_fill`). It drops
+new audio if more than 0.5 s piles up. A scripted live run over ATIS,
+KRAL_FM, and gain changes showed gaps 0 throughout.
+
+Live FM: the user heard music on 103.0 (labeled METEOROLOJI) and on
+KRAL_FM 92.0. At LNA 40 / VGA 26, amp off, spot 1, 2.5 s each:
+
+| Channel | Level |
+|---|---|
+| GUARD, LTBA_GND (AM, empty) | −61.4, −60.4 dBFS |
+| LTFM_ATIS | −34.0 |
+| PMR1, PMR5, CH16, RU1 (NFM, empty) | −56.6, −55.6, −61.6, −55.8 |
+| KRAL_FM, POWER_FM, METEOROLOJI | −35.8, −33.2, −30.5 |
+
+So the gate starts at −52 for AM and −48 for narrow FM. Wide FM stations
+sit about where empty FM noise does, so its gate starts off. The amp toggle
+was not switched on in any test run. Debug tests: 21 cases.
+
 ## Not done
 
 - `hardware.hackrf.enable` is not in `~/Documents/nixos`. The board opened without it.

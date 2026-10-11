@@ -92,6 +92,7 @@ Being near a window or outdoors matters more than exact length.
 | WAV | **dr_wav** (single header, vendored) | Recording and test fixtures. |
 | Channel list | **toml++** (single header, vendored) | Human-readable `channels/istanbul.toml`. |
 | CLI parsing | **CLI11** (single header, vendored) | Subcommands + flags with help text. |
+| Station screen | **FTXUI** (from the Nix flake) | Terminal UI with layout, buttons and mouse clicks. Added 2026-10-11 because the hand-written escape-code screen had no mouse support. |
 | Tests | **doctest** + recorded `.iq` files | Fast compiles; tests never need the radio. |
 | Quality | **ASan + UBSan** in debug, **clang-tidy**, **clang-format** | Catch memory and undefined-behaviour bugs immediately. |
 

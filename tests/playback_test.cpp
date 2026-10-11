@@ -39,3 +39,42 @@ TEST_CASE("null playback drains the audio queue") {
   CHECK(played.load(std::memory_order_relaxed) >= tone.size());
   CHECK(ring.size_approx() == 0);
 }
+
+TEST_CASE("playback waits for its cushion and refills after running dry") {
+  vocatron::SpscRing<float> ring(8192);
+  std::atomic<std::uint64_t> underruns{0};
+  std::atomic<std::uint64_t> played{0};
+  vocatron::PlaybackUser user;
+  user.ring = &ring;
+  user.underruns = &underruns;
+  user.played = &played;
+  user.prime_frames = 1000;
+
+  std::vector<float> ones(1000, 1.0f);
+  std::vector<float> out(480, -1.0f);
+
+  // Not enough queued yet: silence, and that is not a gap.
+  REQUIRE(ring.try_write(ones.data(), 500) == 500);
+  vocatron::playback_fill(user, out.data(), out.size());
+  CHECK(out[0] == 0.0f);
+  CHECK(played.load() == 0);
+  CHECK(underruns.load() == 0);
+
+  // Cushion reached: it plays.
+  REQUIRE(ring.try_write(ones.data(), 500) == 500);
+  vocatron::playback_fill(user, out.data(), out.size());
+  CHECK(out[0] == 1.0f);
+  CHECK(played.load() == 480);
+
+  // Drain the rest and run dry once: one gap.
+  vocatron::playback_fill(user, out.data(), out.size());
+  vocatron::playback_fill(user, out.data(), out.size());
+  CHECK(underruns.load() == 1);
+  CHECK(out[479] == 0.0f);
+
+  // A small lump is not enough to restart; it waits for the full cushion.
+  REQUIRE(ring.try_write(ones.data(), 200) == 200);
+  vocatron::playback_fill(user, out.data(), out.size());
+  CHECK(out[0] == 0.0f);
+  CHECK(underruns.load() == 1);
+}

@@ -105,7 +105,7 @@ cmake --preset debug && cmake --build --preset debug
 ```
 
 The dev shell provides cmake, ninja, pkg-config, clang-tools, libhackrf,
-liquid-dsp and FFTW (float).
+liquid-dsp, FFTW (float) and FTXUI.
 
 The debug preset builds with `-Wall -Wextra -Wpedantic -Werror` and
 AddressSanitizer plus UBSan. For a faster build:
@@ -125,6 +125,7 @@ pkg-config, and these libraries:
 - libhackrf (found through pkg-config)
 - liquid-dsp (linked as `-lliquid`)
 - FFTW3, single precision (`fftw3f`, found through pkg-config)
+- FTXUI 6 (found through CMake), for the station screen
 
 miniaudio, toml++ and doctest are vendored in `third_party/`
 (see `third_party/VERSIONS.md`). Audio playback loads libpulse at run time.
@@ -224,22 +225,32 @@ for wide FM noise, so useful levels differ by mode.
 
 ### Station screen
 
-`vocatron tui` shows the channel list and plays the highlighted station. It
-needs a terminal. It starts on LTFM_ATIS at LNA 40, VGA 20, amp off, speaker
-on, with a squelch level chosen for the mode (AM -58, wide FM -32, narrow FM
--48 dBFS). The gate starts closed, so an empty channel stays silent.
+`vocatron tui` is the easiest way to listen. It needs a terminal and works
+with the mouse or the keyboard.
 
-| Key | Action |
+- **Left:** the station list, with group tabs on top (All, Airband, FM,
+  Marine, Ham, PMR, CB, Shortwave). Click a station to listen to it.
+- **Right:** what is playing, a signal bar, and buttons for gain, the RF
+  amp, squelch, mute, stop/play and quit.
+
+It opens on LTFM_ATIS at LNA 40, VGA 26, RF amp off. Changing station or
+gain does not restart the radio, so it switches almost at once.
+
+| Control | What it does |
 |---|---|
-| Up / Down, `k` / `j` | Move the highlight |
-| Enter | Tune the highlighted station |
-| `[` / `]` | Squelch looser / tighter by 2 dB (kept until the station changes) |
-| `s` | Squelch on/off |
-| `m` | Mute the speaker |
-| `-` / `=` (or `+`) | LNA down / up by 8 dB, applied without restarting the radio |
-| `g` | Cycle the group filter |
-| Esc | Stop the radio |
-| `q` | Quit |
+| Gain − / + | LNA, the main amplifier, 0 to 40 dB in steps of 8. Raise it when a station is buried in hiss |
+| VGA − / + | Second amplifier, 0 to 26 dB in steps of 2 |
+| RF amp | About 11 dB more, right at the antenna. Off at start. It turns itself off if the input starts clipping |
+| Squelch − / + and gate | Mute the speaker while the channel is quieter than the level. On for AM (-52 dBFS) and narrow FM (-48). Off for broadcast FM, which never pauses |
+| Mute, Stop/Play, Quit | As named |
+
+Keyboard: arrows and Enter pick a station, `=` / `-` change the LNA, `[` / `]`
+move the squelch, `s` toggles the gate, `m` mutes, Esc stops, `q` quits.
+
+The small line at the bottom right shows the converter level (`adc`),
+clipping, dropped USB bytes, and audio gaps. Clip should stay at 0%. Gaps
+should stay at 0; playback keeps a 150 ms cushion and refills it if the
+radio's audio ever runs late.
 
 ## How it works
 
@@ -337,8 +348,8 @@ vocatron/
 ├── src/
 │   ├── cli/
 │   │   ├── main.cpp       subcommands and flag parsing
-│   │   ├── tui.cpp/.hpp   terminal station screen
-│   │   └── tui_model.hpp  station screen state and key handling
+│   │   ├── tui.cpp/.hpp   station screen (FTXUI, mouse and keyboard)
+│   │   └── tui_model.hpp  gain, amp, and squelch knob logic
 │   └── core/
 │       ├── capture.cpp/.hpp    info, capture, selftest, ringtest
 │       ├── channels.cpp/.hpp   channel file loading
