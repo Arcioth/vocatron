@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -66,6 +67,17 @@ void sync_live(Live &live, const Knobs &knobs) {
   live.squelch_db.store(knobs.squelch_db, std::memory_order_relaxed);
   live.pass_audio.store(!knobs.muted, std::memory_order_relaxed);
 }
+
+// Scan list timing: time on each station before reading its gate, quiet
+// time before moving on after a call, and the longest a station may keep
+// the gate open before it is treated as a steady carrier.
+constexpr int kHopDwellMs = 400;
+constexpr int kHopQuietS = 3;
+constexpr int kHopMaxHoldS = 20;
+// A call is this far over the channel's quietest level; it is over when it
+// falls back under the second number.
+constexpr float kHopJumpDb = 8.0f;
+constexpr float kHopReleaseDb = 5.0f;
 
 const char *mode_label(const std::string &mode) {
   if (mode == "wfm") {
@@ -266,7 +278,8 @@ public:
     std::string what;
   };
 
-  void start(const ScanConfig &config) {
+  // FM runs the FM scan (with RDS); any other band runs the band search.
+  void start(const Band &band, std::uint32_t lna, std::uint32_t vga, bool amp) {
     cancel(true);
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -276,9 +289,24 @@ public:
       fraction_ = 0.0f;
       what_ = "starting";
     }
-    thread_ = std::thread([this, config] {
+    band_ = &band;
+    thread_ = std::thread([this, &band, lna, vga, amp] {
       std::vector<ScanHit> hits;
-      const int rc = run_fm_scan(config, &hits, &Scanner::progress, this);
+      int rc = 0;
+      if (std::string(band.key) == "fm") {
+        ScanConfig config;
+        config.lna_db = lna;
+        config.vga_db = vga;
+        config.amp = amp;
+        rc = run_fm_scan(config, &hits, &Scanner::progress, this);
+      } else {
+        BandSearchConfig config;
+        config.band = &band;
+        config.lna_db = lna;
+        config.vga_db = vga;
+        config.amp = amp;
+        rc = run_band_search(config, &hits, &Scanner::progress, this);
+      }
       {
         std::lock_guard<std::mutex> lock(mutex_);
         hits_ = std::move(hits);
@@ -315,8 +343,8 @@ public:
     return out;
   }
 
-  // Once per finished scan: what it found.
-  bool take_result(std::vector<ScanHit> *hits, int *rc) {
+  // Once per finished scan: what it found, and on which band.
+  bool take_result(std::vector<ScanHit> *hits, int *rc, const Band **band) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!finished_) {
       return false;
@@ -324,8 +352,11 @@ public:
     finished_ = false;
     *hits = hits_;
     *rc = rc_;
+    *band = band_;
     return true;
   }
+
+  const Band *band() const { return band_; }
 
 private:
   static bool progress(float fraction, const char *what, void *user) {
@@ -351,6 +382,7 @@ private:
   std::string what_;
   std::vector<ScanHit> hits_;
   int rc_ = 0;
+  const Band *band_ = &kBands[0];
 };
 
 // Four dots for clarity 0..1.
@@ -363,24 +395,63 @@ std::string clarity_dots(float clarity) {
   return out;
 }
 
-Channel channel_from_hit(const ScanHit &hit) {
+Channel channel_from_hit(const ScanHit &hit, const Band &band, const ChannelBook &book) {
   Channel channel;
-  channel.name = scan_hit_name(hit);
   channel.hz = hit.hz;
-  channel.mode = "wfm";
-  channel.bw_khz = 200;
+  channel.mode = hit.mode;
+  channel.bw_khz = band.bw_khz;
   channel.group = "found";
-  char text[160];
-  std::snprintf(text, sizeof text, "Found by scan · clarity %.2f%s%s",
-                static_cast<double>(hit.clarity), hit.rds_name.empty() ? "" : " · RDS ",
-                hit.rds_name.c_str());
-  channel.description = text;
-  if (hit.rds_pi != 0) {
-    char pi[24];
-    std::snprintf(pi, sizeof pi, " · PI %04X", static_cast<unsigned>(hit.rds_pi));
-    channel.description += pi;
+  char text[200];
+  if (hit.mode == "wfm") {
+    channel.name = scan_hit_name(hit);
+    std::snprintf(text, sizeof text, "Found by scan · clarity %.2f%s%s",
+                  static_cast<double>(hit.clarity), hit.rds_name.empty() ? "" : " · RDS ",
+                  hit.rds_name.c_str());
+    channel.description = text;
+    if (hit.rds_pi != 0) {
+      char pi[24];
+      std::snprintf(pi, sizeof pi, " · PI %04X", static_cast<unsigned>(hit.rds_pi));
+      channel.description += pi;
+    }
+    return channel;
   }
+  // A channel already in the list keeps its name, so 118.100 shows as LTBA_ARR.
+  for (const Channel &known : book.channels) {
+    const auto gap = known.hz > hit.hz ? known.hz - hit.hz : hit.hz - known.hz;
+    if (known.mode == hit.mode && gap <= 4'000) {
+      channel.name = known.name;
+    }
+  }
+  if (channel.name.empty()) {
+    std::snprintf(text, sizeof text, "%s %.3f", band.short_label,
+                  static_cast<double>(hit.hz) / 1.0e6);
+    channel.name = text;
+  }
+  if (hit.steady) {
+    std::snprintf(text, sizeof text,
+                  "On the whole time, %.0f dB over the band: a loop like ATIS, a beacon, or a "
+                  "steady carrier",
+                  static_cast<double>(hit.level_db));
+  } else {
+    std::snprintf(text, sizeof text,
+                  "Heard %d times while watching %s, last %.0f s before the end, up to %.0f dB "
+                  "over its quiet level",
+                  hit.times_heard, band.label, static_cast<double>(hit.last_heard_s),
+                  static_cast<double>(hit.level_db));
+  }
+  channel.description = text;
   return channel;
+}
+
+// The short tag shown after a found channel in the list.
+std::string hit_tag(const ScanHit &hit) {
+  if (hit.mode == "wfm") {
+    return clarity_dots(hit.clarity);
+  }
+  if (hit.steady) {
+    return "steady";
+  }
+  return "talk ×" + std::to_string(hit.times_heard);
 }
 
 } // namespace
@@ -411,8 +482,27 @@ int run_tui() {
   std::string load_error;
   std::vector<Channel> saved = load_saved(&load_error);
   std::vector<Channel> found;
-  // Clarity of each found station, by frequency, for the dots in the list.
-  std::vector<std::pair<std::uint64_t, float>> found_clarity;
+  // The tag shown after each found station, by frequency: clarity dots
+  // for FM, "talk ×N" or "steady" for a band search.
+  std::vector<std::pair<std::uint64_t, std::string>> found_tags;
+  int band_index = 1; // airband
+  std::vector<std::string> band_labels;
+  for (const Band &band : kBands) {
+    band_labels.emplace_back(band.short_label);
+  }
+  // Scan list: hop through the shown stations, stop on one that talks.
+  struct Hop {
+    bool on = false;
+    std::vector<Channel> list;
+    std::size_t index = 0;
+    std::chrono::steady_clock::time_point since;
+    bool holding = false;
+    std::chrono::steady_clock::time_point quiet_since;
+    std::chrono::steady_clock::time_point open_since;
+    // Lowest level seen on each station while scanning, by list index.
+    // A call is a jump over that, not just over the fixed gate.
+    std::vector<float> quiet;
+  } hop;
 
   // --- Station list -------------------------------------------------------
   int group_index = 0;
@@ -440,9 +530,9 @@ int run_tui() {
                     is_saved(channel) ? "★" : " ");
       std::string line = row;
       if (channel.group == "found") {
-        for (const auto &[hz, clarity] : found_clarity) {
+        for (const auto &[hz, tag] : found_tags) {
           if (hz == channel.hz) {
-            line += " " + clarity_dots(clarity);
+            line += " " + tag;
           }
         }
       }
@@ -492,6 +582,7 @@ int run_tui() {
     fill_rows();
   };
   auto tune_selected = [&] {
+    hop.on = false;
     if (selected >= 0 && selected < static_cast<int>(shown.size())) {
       tune(shown[static_cast<std::size_t>(selected)]);
     }
@@ -503,6 +594,7 @@ int run_tui() {
     }
   };
   auto stop_radio = [&] {
+    hop.on = false;
     receiver.stop();
     knobs.amp = false;
     fill_rows();
@@ -559,16 +651,49 @@ int run_tui() {
   };
   auto toggle_scan = [&] {
     if (scanner.state().running) {
-      scanner.cancel(false);
+      scanner.cancel(false); // keeps what it found so far
       return;
     }
     stop_radio();
-    ScanConfig config;
-    config.lna_db = static_cast<std::uint32_t>(knobs.lna);
-    config.vga_db = static_cast<std::uint32_t>(knobs.vga);
-    config.amp = knobs.amp;
     message.clear();
-    scanner.start(config);
+    scanner.start(kBands[static_cast<std::size_t>(band_index)],
+                  static_cast<std::uint32_t>(knobs.lna), static_cast<std::uint32_t>(knobs.vga),
+                  knobs.amp);
+  };
+  auto hop_to = [&](std::size_t index) {
+    hop.index = index % hop.list.size();
+    hop.since = std::chrono::steady_clock::now();
+    hop.holding = false;
+    tune(hop.list[hop.index]);
+  };
+  auto toggle_hop = [&] {
+    if (hop.on) {
+      hop.on = false;
+      message = "Scan list stopped.";
+      return;
+    }
+    hop.list.clear();
+    for (const Channel &channel : shown) {
+      // Broadcast FM never goes quiet, so it would stop the scan at once.
+      // Neither does a steady carrier a band search found.
+      bool steady = false;
+      for (const auto &[hz, tag] : found_tags) {
+        steady = steady || (hz == channel.hz && tag == "steady" && channel.group == "found");
+      }
+      if (channel.mode != "wfm" && !steady) {
+        hop.list.push_back(channel);
+      }
+    }
+    hop.quiet.assign(hop.list.size(), 0.0f);
+    if (hop.list.size() < 2) {
+      message = "Scan list needs two or more AM or narrow FM stations in this tab "
+                "(Airband, Marine, or a band search in Found).";
+      return;
+    }
+    hop.on = true;
+    hop_to(0);
+    message = "Scanning " + std::to_string(hop.list.size()) +
+              " stations. It stops on one that talks and moves on after 3 s of quiet.";
   };
 
   // --- Components ---------------------------------------------------------
@@ -668,13 +793,20 @@ int run_tui() {
   Component save_button = Button(&save_label, toggle_save, flat);
   std::string scan_label;
   Component scan_button = Button(&scan_label, toggle_scan, flat);
+  std::string hop_label;
+  Component hop_button = Button(&hop_label, toggle_hop, flat);
+  MenuOption band_option = MenuOption::Toggle();
+  band_option.entries = &band_labels;
+  band_option.selected = &band_index;
+  Component band_menu = Menu(band_option);
 
   Component controls = Container::Vertical({
       Container::Horizontal({lna_down, lna_up}),
       Container::Horizontal({vga_down, vga_up}),
       amp_button,
       Container::Horizontal({sql_down, sql_up, gate_button}),
-      Container::Horizontal({save_button, scan_button}),
+      Container::Horizontal({save_button, hop_button}),
+      Container::Horizontal({band_menu, scan_button}),
       Container::Horizontal({mute_button, play_button, quit_button}),
   });
   Component body = Container::Horizontal({list_click, controls});
@@ -690,7 +822,8 @@ int run_tui() {
     mute_label = knobs.muted ? " Unmute " : " Mute ";
     play_label = snap.running ? " Stop " : " Play ";
     const Scanner::State scan = scanner.state();
-    scan_label = scan.running ? " Cancel scan " : " Scan FM ";
+    scan_label = scan.running ? " Stop search " : " Search ";
+    hop_label = hop.on ? " Stop scan list " : " Scan list ";
     save_label = !now.name.empty() && is_saved(now) ? " ★ Saved (forget) " : " Save ";
 
     // What is happening, in words.
@@ -713,12 +846,20 @@ int run_tui() {
 
     Elements info;
     if (scan.running) {
-      info.push_back(text("Scanning the FM band") | bold);
+      const Band &searching = *scanner.band();
+      info.push_back(text(std::string("Searching ") + searching.label) | bold);
       info.push_back(gauge(scan.fraction) | color(Color::Cyan));
       info.push_back(text(scan.what) | dim);
-      info.push_back(paragraph("It finds every station this radio can hear, how clean each one "
-                               "is, and its RDS name. About a minute.") |
-                     dim);
+      if (std::string(searching.key) == "fm") {
+        info.push_back(paragraph("It finds every station this radio can hear, how clean each "
+                                 "one is, and its RDS name. About a minute.") |
+                       dim);
+      } else {
+        info.push_back(paragraph("Watching for transmissions for 45 s. Towers, ships, and "
+                                 "handhelds only talk now and then. Stop search keeps what it "
+                                 "found so far.") |
+                       dim);
+      }
     } else if (now.name.empty()) {
       info.push_back(text("Click a station to listen.") | bold);
     } else {
@@ -774,7 +915,8 @@ int run_tui() {
     info.push_back(hbox({text("Squelch "), sql_down->Render(), text(value), sql_up->Render(),
                          text(" "), gate_button->Render()}));
     info.push_back(separatorEmpty());
-    info.push_back(hbox({save_button->Render(), text("  "), scan_button->Render()}));
+    info.push_back(hbox({save_button->Render(), text("  "), hop_button->Render()}));
+    info.push_back(hbox({text("Search  "), band_menu->Render(), text(" "), scan_button->Render()}));
     info.push_back(hbox({mute_button->Render(), text("  "), play_button->Render(), text("  "),
                          quit_button->Render()}));
     info.push_back(filler());
@@ -797,8 +939,9 @@ int run_tui() {
                separator(),
                hbox({station_list | size(WIDTH, EQUAL, 38), separator(), vbox(info) | flex}) | flex,
                separator(),
-               text(" click a station · Save the ones you can hear · = − gain · [ ] squelch · "
-                    "m mute · q quit") |
+               text(
+                   " click a station · Save what you can hear · Search a band · Scan list stops on "
+                   "talk · q quit") |
                    dim,
            }) |
            border;
@@ -809,20 +952,35 @@ int run_tui() {
     if (event == Event::Custom) {
       std::vector<ScanHit> hits;
       int scan_rc = 0;
-      if (scanner.take_result(&hits, &scan_rc)) {
+      const Band *searched = nullptr;
+      if (scanner.take_result(&hits, &scan_rc, &searched)) {
         if (scan_rc != 0) {
-          message = "The scan could not use the radio. Is the HackRF plugged in and free?";
+          message = "The search could not use the radio. Is the HackRF plugged in and free?";
         } else {
           found.clear();
-          found_clarity.clear();
+          found_tags.clear();
+          int hidden = 0;
           for (const ScanHit &hit : hits) {
-            found.push_back(channel_from_hit(hit));
-            found_clarity.emplace_back(hit.hz, hit.clarity);
+            if (hit.interference) {
+              ++hidden;
+              continue;
+            }
+            found.push_back(channel_from_hit(hit, *searched, book));
+            found_tags.emplace_back(hit.hz, hit_tag(hit));
           }
           show_group("found");
-          message =
-              "Found " + std::to_string(found.size()) +
-              " stations (●●●● = clean). Click one to listen, and Save the ones you can hear.";
+          if (std::string(searched->key) == "fm") {
+            message = "Found " + std::to_string(found.size()) +
+                      " stations (●●●● = clean). Click one to listen, and Save the ones you "
+                      "can hear.";
+          } else {
+            message = "Found " + std::to_string(found.size()) + " channels in use on " +
+                      searched->label + " (talk ×N = heard N times). Click one to listen, or " +
+                      "Scan list to catch the next call.";
+            if (hidden > 0) {
+              message += " " + std::to_string(hidden) + " interference carriers hidden.";
+            }
+          }
         }
       }
       const Receiver::Snapshot snap = receiver.read();
@@ -856,6 +1014,41 @@ int run_tui() {
         knobs.amp = false;
         push_gain();
         message = "RF amp turned off: the input was clipping.";
+      }
+      if (hop.on && snap.running) {
+        using namespace std::chrono;
+        const auto t = steady_clock::now();
+        const float level = snap.view.channel_dbfs;
+        float &quiet = hop.quiet[hop.index];
+        const bool known = quiet < 0.0f;
+        // Talking: over the gate, and well over this channel's own quiet level.
+        const bool open = snap.view.sql_open && (!known || level >= quiet + kHopJumpDb);
+        if (!hop.holding) {
+          // Give each station a moment to settle before reading its gate.
+          if (t - hop.since >= milliseconds(kHopDwellMs)) {
+            if (level > -190.0f && (!known || level < quiet)) {
+              quiet = level;
+            }
+            if (open) {
+              hop.holding = true;
+              hop.quiet_since = t;
+              hop.open_since = t;
+              message = "Stopped on " + now.name +
+                        ": someone is talking. Scan list goes on "
+                        "after 3 s of quiet.";
+            } else {
+              hop_to(hop.index + 1);
+            }
+          }
+        } else if (snap.view.sql_open && (!known || level >= quiet + kHopReleaseDb)) {
+          hop.quiet_since = t;
+          // On the whole time: a steady carrier, not a call. Move on.
+          if (t - hop.open_since >= seconds(kHopMaxHoldS)) {
+            hop_to(hop.index + 1);
+          }
+        } else if (t - hop.quiet_since >= seconds(kHopQuietS)) {
+          hop_to(hop.index + 1);
+        }
       }
       return false;
     }

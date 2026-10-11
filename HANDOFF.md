@@ -330,6 +330,39 @@ A live scripted run scanned (57 found), played TRTARABI (clarity 1.00,
 RDS TRTARABI), saved FM 91.4, saw it in the Saved tab, and forgot it again.
 Debug tests: 28 cases.
 
+## Airband fixed, band search, scan list (2026-10-11)
+
+The user could not hear towers. The airband list had wrong entries:
+LTFM_TWR 124.775 does not exist; 118.100 is Yesilkoy arrival (Ataturk
+tower is 119.800); 121.700 is delivery; Sabiha Gokcen ATIS is 128.550.
+Rewritten from SkyVector (Turkish AIP) and learn-atc; 128.200 is now
+LTBA_ATIS (the screen opens on it). 124.775 also held steady energy in
+channel that opened the gate with nothing to hear.
+
+AM channel filter is now two steps (121 taps to 240 kHz, 241 taps to
+48 kHz): passes about ±2.2 kHz, 60 dB down by ±5.8 kHz, a third of the
+old multiply-adds. Same captures read the same channel level (within 1 dB).
+Live levels moved a lot during the day (ATIS −34 then −50) with position.
+
+`vocatron search <band>` and Search in the screen: 20 MS/s, 15 MHz filter,
+16384-point FFT, tuner positions 6.8 MHz apart each measuring 0.1–7 MHz
+above, about 10 sweeps a second on airband. Per channel: median (usual),
+max, visits ≥6 dB over usual. Talk: max ≥10 dB over usual and ≥2 such
+visits. Steady: usual ≥8 dB over the band's median. Strongest within ±2
+channels kept. The first 2 s are dropped (false hits at start). At the desk
+a ~612 kHz comb of steady carriers covered all of airband (teeth snap to
+608/617 kHz on the 8.33 kHz grid) plus hits on whole MHz; both are flagged
+as interference and hidden (about 30–43 per run). A 30–45 s airband search
+found IST_APP 118.950, 118.100 (LTBA_ARR), 119.300, 126.425, 127.100,
+132.150, 135.400, and LTBA_ATIS steady. 126.425 and 127.100 are on the
+official approach list.
+
+Scan list hops through the tab's AM/NFM stations, 0.4 s each, stops when
+the gate is open and the level is 8 dB over that channel's quietest
+reading, moves on after 3 s of quiet or 20 s of non-stop open. Search
+"steady" results are skipped. A live run stopped on 127.100, 135.400 and
+126.425 in turn. Debug tests: 32 cases.
+
 ## Not done
 
 - `hardware.hackrf.enable` is not in `~/Documents/nixos`. The board opened without it.

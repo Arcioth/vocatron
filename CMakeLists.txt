@@ -51,15 +51,19 @@ add_executable(vocatron_tests
                tests/level_test.cpp
                tests/rds_test.cpp
                tests/saved_test.cpp
+               tests/search_test.cpp
                src/core/channels.cpp
                src/core/dsp.cpp
                src/core/rds.cpp
                src/core/saved.cpp
+               src/core/scan.cpp
+               src/core/rx.cpp
                src/core/playback.cpp
                src/core/squelch.cpp)
 target_include_directories(vocatron_tests PRIVATE src)
 target_include_directories(vocatron_tests SYSTEM PRIVATE third_party)
-target_link_libraries(vocatron_tests PRIVATE Threads::Threads liquid miniaudio)
+target_link_libraries(vocatron_tests PRIVATE PkgConfig::LIBHACKRF PkgConfig::FFTW3F Threads::Threads
+                                             liquid miniaudio)
 
 enable_testing()
 add_test(NAME ring COMMAND vocatron_tests)

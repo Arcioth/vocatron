@@ -39,7 +39,7 @@ Tested only on synthetic signals (generated test tones in the unit tests):
 
 Known gaps:
 
-- Scan covers FM broadcast only. Only one channel plays at a time.
+- Only one channel plays at a time. A band search stops the radio while it watches.
 - `bw_khz` in the channel file is parsed but not used. Every narrow FM channel
   uses the same filter (about +-8 kHz).
 - The command-line parser is hand-written. There are no `--help` details per
@@ -152,6 +152,7 @@ examples below use the debug build path.
 |---|---|---|
 | `info` | Print the connected HackRF | yes |
 | `scan` | Find the FM stations this radio can hear, with clarity and RDS names | yes |
+| `search <band>` | Watch a band (airband, marine, 2m, 70cm, pmr, cb, sw49/41/31/25) and list the channels in use | yes |
 | `selftest` | Check the spectrum math on a fake tone | no |
 | `capture` | Record I/Q to a file and print a spectrum summary | yes |
 | `ringtest` | Stream 2.4 MS/s through the sample queue and count drops | yes |
@@ -166,6 +167,9 @@ examples below use the debug build path.
 
 # Find every FM station you can receive (about a minute)
 ./build/debug/vocatron scan --lna 32 --vga 26 --amp
+
+# Watch the airband for 45 s and list the channels people talked on
+./build/debug/vocatron search airband
 
 # Check the FFT code without the radio
 ./build/debug/vocatron selftest
@@ -242,12 +246,30 @@ with the mouse or the keyboard.
 It opens on LTBA_ATIS at LNA 40, VGA 26, RF amp off. Changing station or
 gain does not restart the radio, so it switches almost at once.
 
-**Finding and keeping stations.** Click **Scan FM**. In about a minute the
-Found tab lists every FM station the radio can hear, with four dots for how
-clean it is (●●●● is clean) and its RDS name when one came through. Click
-one to listen. If you can hear it well, click **Save**: it gets a ★ and goes
-to the Saved tab, and to `channels/saved.toml`, which is kept between runs.
-Click the button again (it now says "★ Saved (forget)") to remove it.
+**Finding and keeping stations.** Pick a band next to **Search** (FM, AIR,
+MAR, 2M, 70CM, PMR, CB, SW49 to SW25) and click **Search**.
+
+- **FM** takes about a minute and lists every station the radio can hear,
+  with four dots for how clean it is (●●●● is clean) and its RDS name.
+- **Any other band** is watched for 45 seconds, because towers, ships and
+  handhelds only talk now and then. The radio runs at 20 MS/s and sweeps
+  the whole band about ten times a second. Each channel the Found tab lists
+  is tagged `talk ×N` (heard N times) or `steady` (on the whole time, such
+  as an ATIS loop). A channel already in your list keeps its name.
+  Interference is hidden: an evenly spaced comb of steady carriers (from a
+  power supply or similar nearby) or several hits on whole megahertz (the
+  radio's own clock). **Stop search** keeps what it found so far.
+
+Click a found channel to listen. If you can hear it well, click **Save**:
+it gets a ★ and goes to the Saved tab, and to `channels/saved.toml`, which
+is kept between runs. Click the button again ("★ Saved (forget)") to remove it.
+
+**Scan list** hops through the AM and narrow FM stations in the current tab
+(Airband, Marine, Saved, or the Found results), stops on one when someone
+talks, and moves on after 3 seconds of quiet. "Talking" means over the gate
+and 8 dB over the quietest level seen on that channel, so a channel with a
+noisy background does not hold it. Steady carriers from a search are
+skipped. This is the easy way to follow a tower or an approach controller.
 
 While a wide FM station plays you also see:
 
@@ -264,7 +286,8 @@ While a wide FM station plays you also see:
 | RF amp | About 11 dB more, right at the antenna. Off at start. It turns itself off if the input starts clipping |
 | Squelch − / + and gate | Mute the speaker while the channel is quieter than the level. On for AM (-52 dBFS) and narrow FM (-48). Off for broadcast FM, which never pauses |
 | Save | Keep the playing station in the Saved tab |
-| Scan FM | Find FM stations (stops the radio while it scans) |
+| Scan list | Hop through the tab's stations and stop on the one that talks |
+| Search + band | Find what is on a band (stops the radio while it searches) |
 | Mute, Stop/Play, Quit | As named |
 
 Keyboard: arrows and Enter pick a station, `=` / `-` change the LNA, `[` / `]`
@@ -383,7 +406,8 @@ vocatron/
 │       ├── rds.cpp/.hpp        RDS decoder (station name and code)
 │       ├── rx.cpp/.hpp         USB receive callback and stream start/stop
 │       ├── saved.cpp/.hpp      saved stations (channels/saved.toml)
-│       ├── scan.cpp/.hpp       FM band scan
+│       ├── bands.hpp           band list: range, channel grid, mode
+│       ├── scan.cpp/.hpp       FM scan and band search
 │       ├── ring.hpp            lock-free SPSC ring
 │       ├── squelch.cpp/.hpp    channel-power gate
 │       └── miniaudio_impl.c, miniaudio_prefix.hpp

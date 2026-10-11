@@ -26,6 +26,13 @@
 - `vocatron scan` and a Scan FM button: about 60 stations found in about a
   minute, with clarity and RDS names. Found tab, Save button, Saved tab,
   and `channels/saved.toml` for the stations you confirm you can hear.
+- Airband list corrected against SkyVector/learn-atc (towers, ground,
+  delivery, ATIS). 128.200 is LTBA_ATIS. AM channel filter is two steps and
+  sharp at the next 8.33 kHz channel.
+- Band search (`vocatron search <band>`, Search in the screen) for airband,
+  marine, 2 m, 70 cm, PMR446, CB and shortwave: watches for transmissions
+  and lists channels as talk ×N or steady, with interference combs hidden.
+- Scan list: hop through a tab's stations and stop on the one that talks.
 
 ## 2026-10-09
 

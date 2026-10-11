@@ -30,6 +30,9 @@ void print_usage() {
       "    Stream 2.4 MS/s through the sample queue and count dropped bytes.\n"
       "vocatron scan [--lna 40] [--vga 26] [--amp]\n"
       "    Find the FM stations this radio can hear, with clarity and RDS names.\n"
+      "vocatron search <band> [--seconds 45] [--lna 40] [--vga 26] [--amp]\n"
+      "    Watch a band and list the channels in use. Bands: airband, marine,\n"
+      "    2m, 70cm, pmr, cb, sw49, sw41, sw31, sw25.\n"
       "vocatron list [--group airband]\n"
       "    Print the stations in channels/istanbul.toml.\n"
       "vocatron tui\n"
@@ -438,6 +441,70 @@ int main(int argc, char **argv) {
                   hit.rds_name.c_str());
       if (hit.rds_pi != 0) {
         std::printf("  (PI %04X)", static_cast<unsigned>(hit.rds_pi));
+      }
+      std::printf("\n");
+    }
+    return 0;
+  }
+  if (std::strcmp(argv[1], "search") == 0) {
+    vocatron::BandSearchConfig config;
+    if (argc >= 3) {
+      for (const vocatron::Band &band : vocatron::kBands) {
+        if (std::strcmp(argv[2], band.key) == 0 && std::strcmp(band.key, "fm") != 0) {
+          config.band = &band;
+        }
+      }
+    }
+    if (config.band == nullptr) {
+      std::fprintf(stderr, "search needs a band: airband, marine, 2m, 70cm, pmr, cb, sw49, sw41, "
+                           "sw31, sw25 (FM radio is vocatron scan)\n");
+      return 2;
+    }
+    for (int i = 3; i < argc; ++i) {
+      const char *arg = argv[i];
+      if (std::strcmp(arg, "--amp") == 0) {
+        config.amp = true;
+        continue;
+      }
+      if (i + 1 >= argc) {
+        std::fprintf(stderr, "%s needs a value\n", arg);
+        return 2;
+      }
+      const char *value = argv[++i];
+      if (std::strcmp(arg, "--seconds") == 0) {
+        if (!parse_seconds(value, &config.seconds)) {
+          std::fprintf(stderr, "--seconds needs a number\n");
+          return 2;
+        }
+        continue;
+      }
+      std::uint32_t *slot = std::strcmp(arg, "--lna") == 0   ? &config.lna_db
+                            : std::strcmp(arg, "--vga") == 0 ? &config.vga_db
+                                                             : nullptr;
+      if (slot == nullptr || !parse_u32(value, slot)) {
+        std::fprintf(stderr, "bad argument: %s\n", arg);
+        return 2;
+      }
+    }
+    std::vector<vocatron::ScanHit> hits;
+    const auto show = [](float fraction, const char *what, void *) {
+      std::fprintf(stderr, "\r%3.0f%%  %-50s", static_cast<double>(fraction) * 100.0, what);
+      return true;
+    };
+    const int rc = vocatron::run_band_search(config, &hits, show, nullptr);
+    std::fprintf(stderr, "\n");
+    if (rc != 0) {
+      return rc;
+    }
+    std::printf("%zu channels in use\n     MHz     kind     dB  heard  last\n", hits.size());
+    for (const vocatron::ScanHit &hit : hits) {
+      std::printf("%9.4f  %-7s %5.1f  %5d  %s", static_cast<double>(hit.hz) / 1e6,
+                  hit.interference ? "noise?"
+                  : hit.steady     ? "steady"
+                                   : "talk",
+                  static_cast<double>(hit.level_db), hit.times_heard, hit.steady ? "always" : "");
+      if (!hit.steady) {
+        std::printf("%.0f s ago", static_cast<double>(hit.last_heard_s));
       }
       std::printf("\n");
     }
