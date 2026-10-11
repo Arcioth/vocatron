@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/vocatron.png" alt="vocatron: SDR listening software for ATC, VHF and FM" width="760">
+  <img src="docs/vocatron.png" alt="vocatron: SDR listening software for ATC, VHF and FM" width="578">
 </p>
 
 <p align="center">
