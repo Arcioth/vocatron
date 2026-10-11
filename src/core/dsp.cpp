@@ -29,8 +29,18 @@ namespace {
 constexpr unsigned kChannelDecim = 10; // 2.4 MS/s → 240 kHz
 constexpr unsigned kAudioDecim = 5;    // 240 kHz → 48 kHz
 constexpr unsigned kAmDecim = 50;      // 2.4 MS/s → 48 kHz
-constexpr unsigned kAmTaps = 1201;
-constexpr float kAmCutoffHz = 3500.0f;
+// AM channel filter, in two steps. First a cheap wide low-pass and 1 of
+// every 10 samples (2.4 MS/s to 240 kHz), then a sharp one at the lower
+// rate and 1 of every 5 (to 48 kHz). The sharp one passes about ±2.2 kHz,
+// is 60 dB down by ±5.8 kHz, and so keeps the next 8.33 kHz channel and
+// steady carriers a few kHz away out of the audio and the squelch meter.
+constexpr unsigned kAmWideDecim = 10;
+constexpr unsigned kAmWideTaps = 121;
+constexpr float kAmWideCutoffHz = 100'000.0f;
+constexpr unsigned kAmNarrowDecim = 5;
+constexpr unsigned kAmNarrowTaps = 241;
+constexpr float kAmCutoffHz = 4000.0f;
+static_assert(kAmWideDecim * kAmNarrowDecim == kAmDecim, "AM steps must reach 48 kHz");
 constexpr float kAmDcR = 0.995f;
 // Slow on purpose. A fast volume control turns the gaps between words
 // up until they are as loud as the voice.
@@ -326,18 +336,18 @@ public:
     nco_ = nco_crcf_create(LIQUID_VCO);
     const float omega = 2.0f * 3.14159265f * shift_hz / static_cast<float>(sample_rate_hz);
     nco_crcf_set_frequency(nco_, omega);
-    // A narrow low-pass, then keep 1 of every 50 samples. 3.5 kHz
-    // keeps airband voice and drops the hiss beside the carrier.
-    std::vector<float> taps(kAmTaps);
-    const float fc = kAmCutoffHz / static_cast<float>(sample_rate_hz);
-    if (liquid_firdes_kaiser(kAmTaps, fc, 60.0f, 0.0f, taps.data()) == 0) {
-      channel_ = firdecim_crcf_create(kAmDecim, taps.data(), kAmTaps);
-      double sum = 0.0;
-      for (float tap : taps) {
-        sum += tap;
-      }
-      meter_.gain = sum;
+    // Keep the voice beside the carrier and drop the hiss around it, in
+    // two steps (see kAmWideDecim). Both filters pass a steady signal at
+    // gain 1, so the meter needs no correction.
+    const auto rate = static_cast<float>(sample_rate_hz);
+    std::vector<float> wide = lowpass_taps(kAmWideTaps, kAmWideCutoffHz, rate, 1.0f);
+    std::vector<float> narrow =
+        lowpass_taps(kAmNarrowTaps, kAmCutoffHz, rate / static_cast<float>(kAmWideDecim), 1.0f);
+    if (!wide.empty() && !narrow.empty()) {
+      wide_ = firdecim_crcf_create(kAmWideDecim, wide.data(), kAmWideTaps);
+      channel_ = firdecim_crcf_create(kAmNarrowDecim, narrow.data(), kAmNarrowTaps);
     }
+    meter_.gain = 1.0;
     const float audio_rate = static_cast<float>(sample_rate_hz) / static_cast<float>(kAmDecim);
     agc_a_ = 1.0f - std::exp(-1.0f / (audio_rate * kAmAgcTau));
     // Airband voice lives under about 2.7 kHz. Higher than that is hiss.
@@ -352,6 +362,9 @@ public:
     if (nco_ != nullptr) {
       nco_crcf_destroy(nco_);
     }
+    if (wide_ != nullptr) {
+      firdecim_crcf_destroy(wide_);
+    }
     if (channel_ != nullptr) {
       firdecim_crcf_destroy(channel_);
     }
@@ -364,7 +377,8 @@ public:
   Am &operator=(const Am &) = delete;
 
   bool ok() const {
-    return nco_ != nullptr && channel_ != nullptr && voice_ != nullptr && rate_ == kExpectedRate;
+    return nco_ != nullptr && wide_ != nullptr && channel_ != nullptr && voice_ != nullptr &&
+           rate_ == kExpectedRate;
   }
 
   float channel_dbfs() const { return meter_.dbfs; }
@@ -401,8 +415,10 @@ private:
     }
     nco_crcf_mix_block_down(nco_, iq_.data(), mixed_.data(), kBlockIn);
 
+    constexpr unsigned kWideOut = kBlockIn / kAmWideDecim;
     constexpr unsigned kAudioOut = kBlockIn / kAmDecim;
-    firdecim_crcf_execute_block(channel_, mixed_.data(), kAudioOut, channel_out_.data());
+    firdecim_crcf_execute_block(wide_, mixed_.data(), kWideOut, wide_out_.data());
+    firdecim_crcf_execute_block(channel_, wide_out_.data(), kAudioOut, channel_out_.data());
     meter_.add(channel_out_.data(), kAudioOut);
 
     for (unsigned n = 0; n < kAudioOut; ++n) {
@@ -428,6 +444,7 @@ private:
 
   std::uint32_t rate_ = 0;
   nco_crcf nco_ = nullptr;
+  firdecim_crcf wide_ = nullptr;
   firdecim_crcf channel_ = nullptr;
   iirfilt_rrrf voice_ = nullptr;
   float agc_a_ = 0.0f;
@@ -438,6 +455,8 @@ private:
   std::vector<std::uint8_t> scratch_;
   std::vector<liquid_float_complex> iq_ = std::vector<liquid_float_complex>(kBlockIn);
   std::vector<liquid_float_complex> mixed_ = std::vector<liquid_float_complex>(kBlockIn);
+  std::vector<liquid_float_complex> wide_out_ =
+      std::vector<liquid_float_complex>(kBlockIn / kAmWideDecim);
   std::vector<liquid_float_complex> channel_out_ =
       std::vector<liquid_float_complex>(kBlockIn / kAmDecim);
   std::vector<float> audio_out_ = std::vector<float>(kBlockIn / kAmDecim);

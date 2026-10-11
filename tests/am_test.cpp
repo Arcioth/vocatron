@@ -61,3 +61,24 @@ TEST_CASE("AM demod recovers a 1 kHz tone") {
   CHECK(at_tone > at_low * 20.0f);
   CHECK(at_tone > at_high * 20.0f);
 }
+
+TEST_CASE("AM keeps a steady carrier 8.4 kHz away out of the channel") {
+  constexpr std::uint32_t kRate = 2'400'000;
+  constexpr float kShift = 250'000.0f;
+  // Unmodulated carrier 8.4 kHz above the channel, like the interference
+  // comb seen near 124.775 MHz.
+  std::vector<std::uint8_t> iq(static_cast<std::size_t>(kRate));
+  double phase = 0.0;
+  const double step = 2.0 * 3.14159265358979323846 * (kShift + 8400.0) / kRate;
+  for (std::size_t n = 0; n < iq.size() / 2; ++n) {
+    phase += step;
+    iq[2 * n] = static_cast<std::uint8_t>(
+        static_cast<std::int8_t>(std::lround(0.3 * std::cos(phase) * 127.0)));
+    iq[2 * n + 1] = static_cast<std::uint8_t>(
+        static_cast<std::int8_t>(std::lround(0.3 * std::sin(phase) * 127.0)));
+  }
+  const vocatron::WfmResult result = vocatron::demod_am(iq.data(), iq.size(), kRate, kShift);
+  REQUIRE(result.ok);
+  // The same carrier on the channel itself would read about -10.5 dBFS.
+  CHECK(result.channel_dbfs < -60.0f);
+}
