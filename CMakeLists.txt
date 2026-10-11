@@ -27,6 +27,7 @@ add_executable(vocatron
                src/core/capture.cpp
                src/core/channels.cpp
                src/core/dsp.cpp
+               src/core/rds.cpp
                src/core/listen.cpp
                src/core/squelch.cpp
                src/core/playback.cpp)
@@ -45,8 +46,10 @@ add_executable(vocatron_tests
                tests/squelch_test.cpp
                tests/tui_test.cpp
                tests/level_test.cpp
+               tests/rds_test.cpp
                src/core/channels.cpp
                src/core/dsp.cpp
+               src/core/rds.cpp
                src/core/playback.cpp
                src/core/squelch.cpp)
 target_include_directories(vocatron_tests PRIVATE src)

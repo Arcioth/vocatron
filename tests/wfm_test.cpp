@@ -163,15 +163,16 @@ float clarity_of(const std::vector<std::uint8_t> &iq, std::vector<float> *audio 
 } // namespace
 
 TEST_CASE("wide FM clarity follows the noise, not the strength") {
-  const float clean = clarity_of(noisy_station(35.0, 0.3));
-  const float clean_weak = clarity_of(noisy_station(35.0, 0.05));
-  const float fair = clarity_of(noisy_station(15.0, 0.3));
-  const float buried = clarity_of(noisy_station(2.0, 0.3));
+  // 1 means well above FM's noise cliff (about 12 dB signal-to-noise).
+  const float clean = clarity_of(noisy_station(25.0, 0.3));
+  const float clean_weak = clarity_of(noisy_station(25.0, 0.05));
+  const float fair = clarity_of(noisy_station(5.0, 0.3));
+  const float buried = clarity_of(noisy_station(-5.0, 0.3));
   CHECK(clean > 0.95f);
   CHECK(clean_weak > 0.95f);
-  CHECK(fair > 0.3f);
+  CHECK(fair > 0.25f);
   CHECK(fair < 0.65f);
-  CHECK(buried < 0.05f);
+  CHECK(buried < 0.1f);
 }
 
 TEST_CASE("wide FM audio drops the 19 kHz pilot") {

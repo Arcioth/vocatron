@@ -169,6 +169,14 @@ int run_demod_cli(int argc, char **argv) {
   const double seconds = static_cast<double>(audio.audio.size()) / 48000.0;
   std::printf("wrote %s (%zu samples, %.2f s at 48 kHz, channel %.1f dBFS)\n", out_path,
               audio.audio.size(), seconds, static_cast<double>(audio.channel_dbfs));
+  if (std::strcmp(mode, "wfm") == 0) {
+    std::printf("clarity %.2f (0 buried, 1 clean)   RDS %s", static_cast<double>(audio.clarity),
+                audio.rds_name.empty() ? "none" : audio.rds_name.c_str());
+    if (audio.rds_pi != 0) {
+      std::printf("  PI %04X", static_cast<unsigned>(audio.rds_pi));
+    }
+    std::printf("\n");
+  }
   return 0;
 }
 

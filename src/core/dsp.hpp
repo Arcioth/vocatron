@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace vocatron {
@@ -13,6 +14,10 @@ struct WfmResult {
   std::vector<float> audio;
   // Strength of the filtered channel. 0 dB is a full-scale wave.
   float channel_dbfs = -200.0f;
+  // Wide FM only: 0 (buried) to 1 (clean), and the RDS name if one arrived.
+  float clarity = 0.0f;
+  std::string rds_name;
+  std::uint16_t rds_pi = 0;
 };
 
 // One wide-FM demodulator kept alive for a whole listen.
@@ -36,9 +41,15 @@ public:
   // Measured above 75 kHz in the demodulated signal, where no program lives,
   // so it does not depend on the gain settings. Lower is cleaner.
   float noise_db() const;
-  // The same reading as 0 (buried in noise) to 1 (clean). Below 1 the
-  // weak-signal treble cut is active.
+  // The same reading as 0 (buried in noise) to 1 (clean). Below about
+  // 0.6 the weak-signal treble cut is active.
   float clarity() const;
+  // Station name from RDS, empty until all of it arrived (see rds.hpp).
+  std::string rds_name() const;
+  // The same 8 letters packed into one number, for passing between threads.
+  std::uint64_t rds_name_packed() const;
+  // RDS station code, 0 until seen.
+  std::uint16_t rds_pi() const;
 
   // Write produced audio into `dst`. Returns how many samples were written.
   // `dst_cap` must be at least one sample per 50 input samples, plus 480.

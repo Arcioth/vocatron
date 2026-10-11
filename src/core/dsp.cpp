@@ -11,6 +11,8 @@
 
 #include "dsp.hpp"
 
+#include "rds.hpp"
+
 #include <complex>
 
 #include <liquid/liquid.h>
@@ -55,18 +57,19 @@ constexpr float kWfmAudioCutoffHz = 17'000.0f;
 // Noise gauge: the demodulated signal above 75 kHz carries no program.
 constexpr float kWfmNoiseHz = 75'000.0f;
 // Noise gauge readings (dB) for a clean and a buried station. On generated
-// stations the gauge read about -20 dB at 0 dB signal-to-noise, -30 at 10,
-// -39 at 20, and -48 at 30, whatever the station's strength.
-// Clarity is 0 at about 5 dB signal-to-noise and 1 at 30 dB.
-constexpr float kWfmNoiseCleanDb = -48.0f;
-constexpr float kWfmNoiseBadDb = -24.0f;
-// The treble cut stays off above this clarity (about 20 dB signal-to-noise,
-// where FM still sounds clean) and closes in below it.
-constexpr float kHicutFromClarity = 0.625f;
+// stations the gauge read about -20 dB at 0 dB signal-to-noise, -24 at 5,
+// -30 at 10, and -39 at 20, whatever the station's strength. On real
+// Istanbul stations at the desk (2026-10-11): TRT FM -31.7 and POWER FM
+// -27.3 sounded clean; METEOROLOJI and VIRGIN at -19.6 were half noise.
+// So 1 is "well above FM's noise cliff" and 0 is "at or below it".
+constexpr float kWfmNoiseCleanDb = -32.0f;
+constexpr float kWfmNoiseBadDb = -18.0f;
+// The treble cut stays off above this clarity and closes in below it.
+constexpr float kHicutFromClarity = 0.5f;
 // One block is 10 ms, so this smooths over about half a second.
 constexpr float kNoiseSmoothing = 0.02f;
 constexpr unsigned kNoiseSkipBlocks = 2;
-constexpr float kHicutLowHz = 2500.0f;
+constexpr float kHicutLowHz = 3000.0f;
 constexpr float kHicutHighHz = 15000.0f;
 constexpr float kAudioRateHz = 48000.0f;
 constexpr unsigned kBlockIn = 24000; // divisible by 10*5 and by 50
@@ -196,6 +199,7 @@ public:
   float channel_dbfs() const { return meter_.dbfs; }
   float noise_db() const { return noise_db_; }
   float clarity() const { return clarity_; }
+  const RdsDecoder &rds() const { return rds_; }
 
   // Returns how many audio samples were written. A short `dst_cap` stops
   // early and leaves the rest in scratch for the next call.
@@ -248,6 +252,7 @@ private:
       message_[n] = deemph_y_;
     }
     update_clarity(noise_sum / kChannelOut);
+    rds_.process(mpx_.data(), kChannelOut);
 
     constexpr unsigned kAudioOut = kChannelOut / kAudioDecim;
     firdecim_rrrf_execute_block(audio_, message_.data(), kAudioOut, audio_out_.data());
@@ -282,7 +287,7 @@ private:
       hicut_a_ = 1.0f;
       return;
     }
-    // From 2.5 kHz when the station is buried to 15 kHz near the clean end.
+    // From 3 kHz when the station is buried to 15 kHz near the clean end.
     const float cutoff = kHicutLowHz * std::pow(kHicutHighHz / kHicutLowHz, h);
     hicut_a_ = 1.0f - std::exp(-2.0f * 3.14159265f * cutoff / kAudioRateHz);
   }
@@ -312,6 +317,7 @@ private:
   std::vector<float> message_ = std::vector<float>(kBlockIn / kChannelDecim);
   std::vector<float> audio_out_ = std::vector<float>(kBlockIn / kChannelDecim / kAudioDecim);
   ChannelMeter meter_;
+  RdsDecoder rds_;
 };
 
 class Am {
@@ -606,6 +612,16 @@ float WfmStream::noise_db() const { return impl_ != nullptr ? impl_->demod.noise
 
 float WfmStream::clarity() const { return impl_ != nullptr ? impl_->demod.clarity() : 0.0f; }
 
+std::string WfmStream::rds_name() const {
+  return impl_ != nullptr ? impl_->demod.rds().name() : std::string();
+}
+
+std::uint64_t WfmStream::rds_name_packed() const {
+  return impl_ != nullptr ? impl_->demod.rds().name_packed() : 0;
+}
+
+std::uint16_t WfmStream::rds_pi() const { return impl_ != nullptr ? impl_->demod.rds().pi() : 0; }
+
 struct AmStream::Impl {
   Am demod;
   Impl(std::uint32_t rate, float shift) : demod(rate, shift) {}
@@ -681,6 +697,9 @@ WfmResult demod_wfm(const std::uint8_t *iq, std::size_t bytes, std::uint32_t sam
                         block.begin() + static_cast<std::ptrdiff_t>(got));
     off += n;
   }
+  result.clarity = stream.clarity();
+  result.rds_name = stream.rds_name();
+  result.rds_pi = stream.rds_pi();
   result.channel_dbfs = stream.channel_dbfs();
   result.ok = !result.audio.empty();
   return result;
