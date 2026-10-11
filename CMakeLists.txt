@@ -29,6 +29,8 @@ add_executable(vocatron
                src/core/dsp.cpp
                src/core/rds.cpp
                src/core/listen.cpp
+               src/core/rx.cpp
+               src/core/scan.cpp
                src/core/squelch.cpp
                src/core/playback.cpp)
 target_include_directories(vocatron PRIVATE src)

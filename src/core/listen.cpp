@@ -14,6 +14,7 @@
 #include "hackrf_session.hpp"
 #include "playback.hpp"
 #include "ring.hpp"
+#include "rx.hpp"
 #include "squelch.hpp"
 
 #include <hackrf.h>
@@ -79,29 +80,6 @@ struct Signals {
   Signals &operator=(const Signals &) = delete;
 };
 
-struct IqSink {
-  SpscRing<std::uint8_t> *ring = nullptr;
-  std::atomic<std::uint64_t> dropped{0};
-  std::atomic<std::uint64_t> zero_xfers{0};
-  std::atomic<std::uint64_t> usb_bytes{0};
-};
-
-// Only the USB thread calls this. Copy into the ring and return.
-extern "C" int vocatron_listen_rx(hackrf_transfer *transfer) {
-  auto *sink = static_cast<IqSink *>(transfer->rx_ctx);
-  if (transfer->valid_length <= 0) {
-    sink->zero_xfers.fetch_add(1, std::memory_order_relaxed);
-    return 0;
-  }
-  const auto n = static_cast<std::size_t>(transfer->valid_length);
-  sink->usb_bytes.fetch_add(n, std::memory_order_relaxed);
-  const std::size_t wrote = sink->ring->try_write(transfer->buffer, n);
-  if (wrote < n) {
-    sink->dropped.fetch_add(n - wrote, std::memory_order_relaxed);
-  }
-  return 0;
-}
-
 bool check_call(const char *what, int rc) {
   if (rc == HACKRF_SUCCESS) {
     return true;
@@ -155,40 +133,6 @@ float bump_peak(std::atomic<float> &slot, float peak) {
   }
   return peak;
 }
-
-class RxStream {
-public:
-  explicit RxStream(hackrf_device *dev) : dev_(dev) {}
-
-  ~RxStream() { stop(); }
-
-  RxStream(const RxStream &) = delete;
-  RxStream &operator=(const RxStream &) = delete;
-
-  bool start(hackrf_sample_block_cb_fn callback, void *ctx) {
-    if (!check_call("hackrf_start_rx", hackrf_start_rx(dev_, callback, ctx))) {
-      return false;
-    }
-    running_ = true;
-    return true;
-  }
-
-  void stop() {
-    if (!running_) {
-      return;
-    }
-    const int rc = hackrf_stop_rx(dev_);
-    running_ = false;
-    if (rc != HACKRF_SUCCESS && rc != HACKRF_ERROR_STREAMING_STOPPED &&
-        rc != HACKRF_ERROR_STREAMING_EXIT_CALLED) {
-      print_error("hackrf_stop_rx", rc);
-    }
-  }
-
-private:
-  hackrf_device *dev_ = nullptr;
-  bool running_ = false;
-};
 
 enum class Demod { Wfm, Am, Nfm };
 
@@ -547,7 +491,7 @@ int run_listen(const ListenConfig &config) {
   });
 
   RxStream rx(dev);
-  if (!rx.start(vocatron_listen_rx, &sink)) {
+  if (!rx.start(&sink)) {
     producer_done.store(true, std::memory_order_release);
     dsp.join();
     return 1;

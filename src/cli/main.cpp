@@ -3,6 +3,7 @@
 #include "core/dsp.hpp"
 #include "core/hackrf_session.hpp"
 #include "core/listen.hpp"
+#include "core/scan.hpp"
 #include "tui.hpp"
 
 #include <hackrf.h>
@@ -27,6 +28,8 @@ void print_usage() {
       "    Check the spectrum math on a fake tone. Does not open the radio.\n"
       "vocatron ringtest [--seconds 3] [--lna 16] [--vga 20]\n"
       "    Stream 2.4 MS/s through the sample queue and count dropped bytes.\n"
+      "vocatron scan [--lna 40] [--vga 26] [--amp]\n"
+      "    Find the FM stations this radio can hear, with clarity and RDS names.\n"
       "vocatron list [--group airband]\n"
       "    Print the stations in channels/istanbul.toml.\n"
       "vocatron tui\n"
@@ -391,6 +394,54 @@ int main(int argc, char **argv) {
   }
   if (std::strcmp(argv[1], "selftest") == 0) {
     return vocatron::run_selftest();
+  }
+  if (std::strcmp(argv[1], "scan") == 0) {
+    vocatron::ScanConfig config;
+    for (int i = 2; i < argc; ++i) {
+      const char *arg = argv[i];
+      if (std::strcmp(arg, "--amp") == 0) {
+        config.amp = true;
+        continue;
+      }
+      if (i + 1 >= argc) {
+        std::fprintf(stderr, "%s needs a value\n", arg);
+        return 2;
+      }
+      const char *value = argv[++i];
+      std::uint32_t *slot = std::strcmp(arg, "--lna") == 0   ? &config.lna_db
+                            : std::strcmp(arg, "--vga") == 0 ? &config.vga_db
+                                                             : nullptr;
+      if (slot == nullptr) {
+        std::fprintf(stderr, "unknown argument: %s\n", arg);
+        print_usage();
+        return 2;
+      }
+      if (!parse_u32(value, slot)) {
+        std::fprintf(stderr, "%s needs a number\n", arg);
+        return 2;
+      }
+    }
+    std::vector<vocatron::ScanHit> hits;
+    const auto show = [](float fraction, const char *what, void *) {
+      std::fprintf(stderr, "\r%3.0f%%  %-40s", static_cast<double>(fraction) * 100.0, what);
+      return true;
+    };
+    const int rc = vocatron::run_fm_scan(config, &hits, show, nullptr);
+    std::fprintf(stderr, "\n");
+    if (rc != 0) {
+      return rc;
+    }
+    std::printf("%zu stations\n   MHz    level  clarity  RDS\n", hits.size());
+    for (const vocatron::ScanHit &hit : hits) {
+      std::printf("%6.1f  %5.1f dB    %.2f   %s", static_cast<double>(hit.hz) / 1e6,
+                  static_cast<double>(hit.level_db), static_cast<double>(hit.clarity),
+                  hit.rds_name.c_str());
+      if (hit.rds_pi != 0) {
+        std::printf("  (PI %04X)", static_cast<unsigned>(hit.rds_pi));
+      }
+      std::printf("\n");
+    }
+    return 0;
   }
   if (std::strcmp(argv[1], "ringtest") == 0) {
     double seconds = 3.0;
