@@ -46,6 +46,29 @@ constexpr float kNfmVoiceHz = 3400.0f;
 constexpr float kNfmDcR = 0.98f;
 constexpr std::uint32_t kExpectedRate = 2'400'000;
 constexpr float kDeemphTau = 50e-6f;
+// Wide FM channel filter: passes about ±80 kHz, gone by ±110 kHz.
+constexpr unsigned kWfmChannelTaps = 301;
+constexpr float kWfmChannelCutoffHz = 95'000.0f;
+// Wide FM audio filter: passes 15 kHz, the 19 kHz pilot is 60 dB down.
+constexpr unsigned kWfmAudioTaps = 241;
+constexpr float kWfmAudioCutoffHz = 17'000.0f;
+// Noise gauge: the demodulated signal above 75 kHz carries no program.
+constexpr float kWfmNoiseHz = 75'000.0f;
+// Noise gauge readings (dB) for a clean and a buried station. On generated
+// stations the gauge read about -20 dB at 0 dB signal-to-noise, -30 at 10,
+// -39 at 20, and -48 at 30, whatever the station's strength.
+// Clarity is 0 at about 5 dB signal-to-noise and 1 at 30 dB.
+constexpr float kWfmNoiseCleanDb = -48.0f;
+constexpr float kWfmNoiseBadDb = -24.0f;
+// The treble cut stays off above this clarity (about 20 dB signal-to-noise,
+// where FM still sounds clean) and closes in below it.
+constexpr float kHicutFromClarity = 0.625f;
+// One block is 10 ms, so this smooths over about half a second.
+constexpr float kNoiseSmoothing = 0.02f;
+constexpr unsigned kNoiseSkipBlocks = 2;
+constexpr float kHicutLowHz = 2500.0f;
+constexpr float kHicutHighHz = 15000.0f;
+constexpr float kAudioRateHz = 48000.0f;
 constexpr unsigned kBlockIn = 24000; // divisible by 10*5 and by 50
 // Speaker gains. See play_gain_for_mode in dsp.hpp for where they come from.
 constexpr float kAmPlayGain = 0.05f;
@@ -87,21 +110,57 @@ struct ChannelMeter {
   }
 };
 
+// Kaiser low-pass taps scaled so a steady (DC) input comes out `dc_gain`
+// times larger. Empty when liquid could not design them.
+std::vector<float> lowpass_taps(unsigned count, float cutoff_hz, float rate_hz, float dc_gain) {
+  std::vector<float> taps(count);
+  if (liquid_firdes_kaiser(count, cutoff_hz / rate_hz, 60.0f, 0.0f, taps.data()) != 0) {
+    return {};
+  }
+  double sum = 0.0;
+  for (float tap : taps) {
+    sum += tap;
+  }
+  if (sum <= 0.0) {
+    return {};
+  }
+  const auto scale = static_cast<float>(static_cast<double>(dc_gain) / sum);
+  for (float &tap : taps) {
+    tap *= scale;
+  }
+  return taps;
+}
+
 class Wfm {
 public:
   Wfm(std::uint32_t sample_rate_hz, float shift_hz) : rate_(sample_rate_hz) {
     nco_ = nco_crcf_create(LIQUID_VCO);
     const float omega = 2.0f * 3.14159265f * shift_hz / static_cast<float>(sample_rate_hz);
     nco_crcf_set_frequency(nco_, omega);
-    // Kaiser low-pass that keeps the FM channel and throws away the rest,
-    // then keeps 1 of every 10 samples.
-    channel_ = firdecim_crcf_create_kaiser(kChannelDecim, 6, 60.0f);
+    const auto rate = static_cast<float>(sample_rate_hz);
+    const float channel_rate = rate / static_cast<float>(kChannelDecim);
+    // Keep about ±80 kHz around the station, gone by ±110 kHz, then keep 1
+    // of every 10 samples. Wider lets in more hiss from beside the station.
+    std::vector<float> channel_taps =
+        lowpass_taps(kWfmChannelTaps, kWfmChannelCutoffHz, rate, static_cast<float>(kChannelDecim));
+    if (!channel_taps.empty()) {
+      channel_ = firdecim_crcf_create(kChannelDecim, channel_taps.data(), kWfmChannelTaps);
+    }
     meter_.gain = static_cast<double>(kChannelDecim);
     // kf scales the phase step. 1 means "radians per sample".
     dem_ = freqdem_create(1.0f);
-    audio_ = firdecim_rrrf_create_kaiser(kAudioDecim, 6, 60.0f);
-    const float channel_rate =
-        static_cast<float>(sample_rate_hz) / static_cast<float>(kChannelDecim);
+    // Broadcast audio stops at 15 kHz. Everything above it is hiss, plus the
+    // 19 kHz stereo pilot tone, so this cuts there and keeps 1 of every 5.
+    std::vector<float> audio_taps = lowpass_taps(kWfmAudioTaps, kWfmAudioCutoffHz, channel_rate,
+                                                 static_cast<float>(kAudioDecim));
+    if (!audio_taps.empty()) {
+      audio_ = firdecim_rrrf_create(kAudioDecim, audio_taps.data(), kWfmAudioTaps);
+    }
+    // Nothing a station sends lives above 75 kHz in the demodulated signal,
+    // so whatever is there is noise. Its strength says how clean the station is.
+    noise_hp_ = iirfilt_rrrf_create_prototype(LIQUID_IIRDES_BUTTER, LIQUID_IIRDES_HIGHPASS,
+                                              LIQUID_IIRDES_SOS, 6, kWfmNoiseHz / channel_rate,
+                                              0.0f, 1.0f, 60.0f);
     deemph_a_ = 1.0f - std::exp(-1.0f / (channel_rate * kDeemphTau));
     // One USB chunk is 256 KiB. Keep room for that plus one leftover block
     // so the live path does not allocate while audio is playing.
@@ -121,6 +180,9 @@ public:
     if (audio_ != nullptr) {
       firdecim_rrrf_destroy(audio_);
     }
+    if (noise_hp_ != nullptr) {
+      iirfilt_rrrf_destroy(noise_hp_);
+    }
   }
 
   Wfm(const Wfm &) = delete;
@@ -128,10 +190,12 @@ public:
 
   bool ok() const {
     return nco_ != nullptr && channel_ != nullptr && dem_ != nullptr && audio_ != nullptr &&
-           rate_ == kExpectedRate;
+           noise_hp_ != nullptr && rate_ == kExpectedRate;
   }
 
   float channel_dbfs() const { return meter_.dbfs; }
+  float noise_db() const { return noise_db_; }
+  float clarity() const { return clarity_; }
 
   // Returns how many audio samples were written. A short `dst_cap` stops
   // early and leaves the rest in scratch for the next call.
@@ -171,16 +235,56 @@ private:
     firdecim_crcf_execute_block(channel_, mixed_.data(), kChannelOut, channel_out_.data());
     meter_.add(channel_out_.data(), kChannelOut);
 
+    double noise_sum = 0.0;
     for (unsigned n = 0; n < kChannelOut; ++n) {
       float message = 0.0f;
       freqdem_demodulate(dem_, channel_out_[n], &message);
+      float high = 0.0f;
+      iirfilt_rrrf_execute(noise_hp_, message, &high);
+      noise_sum += static_cast<double>(high) * high;
+      mpx_[n] = message;
       // One-pole low-pass. DC gain is 1, treble falls off with a 50 µs time constant.
       deemph_y_ += deemph_a_ * (message - deemph_y_);
       message_[n] = deemph_y_;
     }
+    update_clarity(noise_sum / kChannelOut);
 
     constexpr unsigned kAudioOut = kChannelOut / kAudioDecim;
     firdecim_rrrf_execute_block(audio_, message_.data(), kAudioOut, audio_out_.data());
+
+    // Weak-signal treble cut, like a car radio: the noisier the station,
+    // the lower this low-pass sits. A clean station passes untouched.
+    for (unsigned n = 0; n < kAudioOut; ++n) {
+      hicut_y_ += hicut_a_ * (audio_out_[n] - hicut_y_);
+      audio_out_[n] = hicut_y_;
+    }
+  }
+
+  // Smooth the noise reading over about half a second, turn it into a
+  // 0..1 clarity, and set the treble cut from it.
+  void update_clarity(double noise_power) {
+    // The first blocks carry the filters' start-up wobble. Skip them, then
+    // take a plain average until there is half a second of history.
+    ++noise_blocks_;
+    if (noise_blocks_ <= kNoiseSkipBlocks) {
+      return;
+    }
+    const float db =
+        noise_power > 1.0e-20 ? static_cast<float>(10.0 * std::log10(noise_power)) : -200.0f;
+    const float weight =
+        std::max(kNoiseSmoothing, 1.0f / static_cast<float>(noise_blocks_ - kNoiseSkipBlocks));
+    noise_db_ += weight * (db - noise_db_);
+    float c = (kWfmNoiseBadDb - noise_db_) / (kWfmNoiseBadDb - kWfmNoiseCleanDb);
+    c = std::clamp(c, 0.0f, 1.0f);
+    clarity_ = c;
+    const float h = c / kHicutFromClarity;
+    if (h >= 1.0f) {
+      hicut_a_ = 1.0f;
+      return;
+    }
+    // From 2.5 kHz when the station is buried to 15 kHz near the clean end.
+    const float cutoff = kHicutLowHz * std::pow(kHicutHighHz / kHicutLowHz, h);
+    hicut_a_ = 1.0f - std::exp(-2.0f * 3.14159265f * cutoff / kAudioRateHz);
   }
 
   std::uint32_t rate_ = 0;
@@ -188,8 +292,14 @@ private:
   firdecim_crcf channel_ = nullptr;
   freqdem dem_ = nullptr;
   firdecim_rrrf audio_ = nullptr;
+  iirfilt_rrrf noise_hp_ = nullptr;
   float deemph_a_ = 0.0f;
   float deemph_y_ = 0.0f;
+  float noise_db_ = -200.0f;
+  unsigned noise_blocks_ = 0;
+  float clarity_ = 0.0f;
+  float hicut_a_ = 1.0f;
+  float hicut_y_ = 0.0f;
   std::vector<std::uint8_t> scratch_;
   // Parentheses, not braces: braces would build a one-element vector
   // because std::complex can be constructed from a number.
@@ -197,6 +307,8 @@ private:
   std::vector<liquid_float_complex> mixed_ = std::vector<liquid_float_complex>(kBlockIn);
   std::vector<liquid_float_complex> channel_out_ =
       std::vector<liquid_float_complex>(kBlockIn / kChannelDecim);
+  // The demodulated signal before the treble cut: audio, pilot, and RDS.
+  std::vector<float> mpx_ = std::vector<float>(kBlockIn / kChannelDecim);
   std::vector<float> message_ = std::vector<float>(kBlockIn / kChannelDecim);
   std::vector<float> audio_out_ = std::vector<float>(kBlockIn / kChannelDecim / kAudioDecim);
   ChannelMeter meter_;
@@ -489,6 +601,10 @@ std::size_t WfmStream::process(const std::uint8_t *iq, std::size_t bytes, float 
 float WfmStream::channel_dbfs() const {
   return impl_ != nullptr ? impl_->demod.channel_dbfs() : -200.0f;
 }
+
+float WfmStream::noise_db() const { return impl_ != nullptr ? impl_->demod.noise_db() : 0.0f; }
+
+float WfmStream::clarity() const { return impl_ != nullptr ? impl_->demod.clarity() : 0.0f; }
 
 struct AmStream::Impl {
   Am demod;

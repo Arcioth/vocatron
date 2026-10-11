@@ -1,8 +1,10 @@
 #include "core/dsp.hpp"
 #include <doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <random>
 #include <vector>
 
 namespace {
@@ -112,4 +114,73 @@ TEST_CASE("wide FM demod keeps the tone across uneven chunks") {
   const float at_high = goertzel(tail, n, 3000.0f, 48000.0f);
   CHECK(at_tone > at_low * 20.0f);
   CHECK(at_tone > at_high * 20.0f);
+}
+
+namespace {
+
+std::uint8_t clamp_byte(double v) {
+  const long x = std::clamp(std::lround(v), -127L, 127L);
+  return static_cast<std::uint8_t>(static_cast<std::int8_t>(x));
+}
+
+// A broadcast-like station at +250 kHz: two program tones and the 19 kHz
+// stereo pilot, with random noise at `snr_db` (measured in 200 kHz).
+std::vector<std::uint8_t> noisy_station(double snr_db, double amplitude) {
+  constexpr std::uint32_t kRate = 2'400'000;
+  constexpr double kTwoPi = 2.0 * 3.14159265358979323846;
+  std::mt19937 rng(7);
+  std::normal_distribution<double> gauss(0.0, 1.0);
+  const double noise_power =
+      amplitude * amplitude / std::pow(10.0, snr_db / 10.0) * (kRate / 200e3);
+  const double sigma = std::sqrt(noise_power / 2.0) * 127.0;
+  std::vector<std::uint8_t> iq(kRate); // 0.5 s
+  double phase = 0.0;
+  for (std::size_t n = 0; n < iq.size() / 2; ++n) {
+    const double t = static_cast<double>(n) / kRate;
+    const double swing = 30e3 * std::sin(kTwoPi * 440.0 * t) +
+                         20e3 * std::sin(kTwoPi * 1000.0 * t) +
+                         7.5e3 * std::sin(kTwoPi * 19000.0 * t);
+    phase += kTwoPi * (250e3 + swing) / kRate;
+    iq[2 * n] = clamp_byte(amplitude * 127.0 * std::cos(phase) + sigma * gauss(rng));
+    iq[2 * n + 1] = clamp_byte(amplitude * 127.0 * std::sin(phase) + sigma * gauss(rng));
+  }
+  return iq;
+}
+
+float clarity_of(const std::vector<std::uint8_t> &iq, std::vector<float> *audio = nullptr) {
+  vocatron::WfmStream stream(2'400'000, 250'000.0f);
+  std::vector<float> out(8192);
+  for (std::size_t off = 0; off < iq.size(); off += 1u << 18) {
+    const std::size_t n = std::min<std::size_t>(1u << 18, iq.size() - off);
+    const std::size_t got = stream.process(iq.data() + off, n, out.data(), out.size());
+    if (audio != nullptr) {
+      audio->insert(audio->end(), out.begin(), out.begin() + static_cast<std::ptrdiff_t>(got));
+    }
+  }
+  return stream.clarity();
+}
+
+} // namespace
+
+TEST_CASE("wide FM clarity follows the noise, not the strength") {
+  const float clean = clarity_of(noisy_station(35.0, 0.3));
+  const float clean_weak = clarity_of(noisy_station(35.0, 0.05));
+  const float fair = clarity_of(noisy_station(15.0, 0.3));
+  const float buried = clarity_of(noisy_station(2.0, 0.3));
+  CHECK(clean > 0.95f);
+  CHECK(clean_weak > 0.95f);
+  CHECK(fair > 0.3f);
+  CHECK(fair < 0.65f);
+  CHECK(buried < 0.05f);
+}
+
+TEST_CASE("wide FM audio drops the 19 kHz pilot") {
+  std::vector<float> audio;
+  clarity_of(noisy_station(40.0, 0.3), &audio);
+  REQUIRE(audio.size() > 9600);
+  const float *a = audio.data() + 4800;
+  const std::size_t n = audio.size() - 4800;
+  const float at_tone = goertzel(a, n, 1000.0f, 48000.0f);
+  const float at_pilot = goertzel(a, n, 19000.0f, 48000.0f);
+  CHECK(at_pilot * 10000.0f < at_tone);
 }

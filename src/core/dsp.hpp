@@ -32,6 +32,13 @@ public:
   bool ok() const;
   // Strength of the filtered channel, from the last process() call.
   float channel_dbfs() const;
+  // How much noise rides on the station, smoothed over about half a second.
+  // Measured above 75 kHz in the demodulated signal, where no program lives,
+  // so it does not depend on the gain settings. Lower is cleaner.
+  float noise_db() const;
+  // The same reading as 0 (buried in noise) to 1 (clean). Below 1 the
+  // weak-signal treble cut is active.
+  float clarity() const;
 
   // Write produced audio into `dst`. Returns how many samples were written.
   // `dst_cap` must be at least one sample per 50 input samples, plus 480.
