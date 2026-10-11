@@ -1,0 +1,421 @@
+# Stations vocatron knows by name.
+# Copy a [[channel]] block to add one. freq_mhz is the station.
+# The radio is tuned 250 kHz below that, so its DC spike misses the channel.
+# mode: wfm (broadcast), am (airband, shortwave, CB), nfm (marine, handheld, repeater).
+# List one group with: vocatron list --group airband
+
+[[channel]]
+name = "TRT_FM"
+freq_mhz = 91.400
+mode = "wfm"
+bw_khz = 200
+group = "broadcast"
+description = "TRT FM"
+
+[[channel]]
+name = "KRAL_FM"
+freq_mhz = 92.000
+mode = "wfm"
+bw_khz = 200
+group = "broadcast"
+description = "Kral FM"
+
+[[channel]]
+name = "TRT_RADYO1"
+freq_mhz = 95.600
+mode = "wfm"
+bw_khz = 200
+group = "broadcast"
+description = "TRT Radyo 1"
+
+[[channel]]
+name = "POWER_FM"
+freq_mhz = 100.000
+mode = "wfm"
+bw_khz = 200
+group = "broadcast"
+description = "Power FM"
+
+[[channel]]
+name = "METEOROLOJI"
+freq_mhz = 103.000
+mode = "wfm"
+bw_khz = 200
+group = "broadcast"
+description = "Meteoroloji radyosu"
+
+[[channel]]
+name = "RADYO_TRAFIK"
+freq_mhz = 104.200
+mode = "wfm"
+bw_khz = 200
+group = "broadcast"
+description = "Radyo Trafik"
+
+[[channel]]
+name = "VIRGIN"
+freq_mhz = 106.200
+mode = "wfm"
+bw_khz = 200
+group = "broadcast"
+description = "Virgin Radio"
+
+[[channel]]
+name = "LTFM_ATIS"
+freq_mhz = 128.200
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Istanbul Airport ATIS, usually a loop"
+
+[[channel]]
+name = "LTFJ_ATIS"
+freq_mhz = 129.825
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Sabiha Gokcen ATIS, usually a loop"
+
+[[channel]]
+name = "IST_APP"
+freq_mhz = 118.950
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Istanbul Approach"
+
+[[channel]]
+name = "IST_RADAR"
+freq_mhz = 120.500
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Istanbul director"
+
+[[channel]]
+name = "IST_CTL"
+freq_mhz = 121.100
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Istanbul en-route"
+
+[[channel]]
+name = "LTFM_TWR"
+freq_mhz = 124.775
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Istanbul Airport tower"
+
+[[channel]]
+name = "LTBA_TWR"
+freq_mhz = 118.100
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Ataturk tower"
+
+[[channel]]
+name = "LTBA_GND"
+freq_mhz = 121.700
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Ataturk ground"
+
+[[channel]]
+name = "LTBA_DEL"
+freq_mhz = 121.900
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Ataturk delivery"
+
+[[channel]]
+name = "IST_INFO"
+freq_mhz = 125.850
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Istanbul VFR information"
+
+[[channel]]
+name = "GUARD"
+freq_mhz = 121.500
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Emergency, usually silent"
+
+[[channel]]
+name = "CH16"
+freq_mhz = 156.800
+mode = "nfm"
+bw_khz = 25
+group = "marine"
+description = "Distress and calling"
+
+[[channel]]
+name = "CH11_YESILKOY"
+freq_mhz = 156.550
+mode = "nfm"
+bw_khz = 25
+group = "marine"
+description = "Istanbul VTS Yesilkoy"
+
+[[channel]]
+name = "CH12_MODA"
+freq_mhz = 156.600
+mode = "nfm"
+bw_khz = 25
+group = "marine"
+description = "Istanbul VTS Moda"
+
+[[channel]]
+name = "CH13_KANDILLI"
+freq_mhz = 156.650
+mode = "nfm"
+bw_khz = 25
+group = "marine"
+description = "Istanbul VTS Kandilli"
+
+[[channel]]
+name = "CH14_TURKELI"
+freq_mhz = 156.700
+mode = "nfm"
+bw_khz = 25
+group = "marine"
+description = "Istanbul VTS Turkeli"
+
+[[channel]]
+name = "CH67_SG"
+freq_mhz = 156.375
+mode = "nfm"
+bw_khz = 25
+group = "marine"
+description = "Coast guard"
+
+[[channel]]
+name = "CH08"
+freq_mhz = 156.400
+mode = "nfm"
+bw_khz = 25
+group = "marine"
+description = "Ship to ship"
+
+[[channel]]
+name = "R0"
+freq_mhz = 145.600
+mode = "nfm"
+bw_khz = 12.5
+group = "amateur"
+description = "2 m repeater output"
+
+[[channel]]
+name = "R1"
+freq_mhz = 145.625
+mode = "nfm"
+bw_khz = 12.5
+group = "amateur"
+description = "2 m repeater output"
+
+[[channel]]
+name = "R4"
+freq_mhz = 145.700
+mode = "nfm"
+bw_khz = 12.5
+group = "amateur"
+description = "2 m repeater output"
+
+[[channel]]
+name = "R7"
+freq_mhz = 145.775
+mode = "nfm"
+bw_khz = 12.5
+group = "amateur"
+description = "2 m repeater output"
+
+[[channel]]
+name = "RU1"
+freq_mhz = 439.150
+mode = "nfm"
+bw_khz = 12.5
+group = "amateur"
+description = "70 cm repeater output"
+
+[[channel]]
+name = "RU5"
+freq_mhz = 439.250
+mode = "nfm"
+bw_khz = 12.5
+group = "amateur"
+description = "70 cm repeater output"
+
+[[channel]]
+name = "RU7"
+freq_mhz = 439.300
+mode = "nfm"
+bw_khz = 12.5
+group = "amateur"
+description = "70 cm repeater output"
+
+[[channel]]
+name = "ISS_SSTV"
+freq_mhz = 145.800
+mode = "nfm"
+bw_khz = 12.5
+group = "amateur"
+description = "Space-station pictures, only during an event"
+
+[[channel]]
+name = "PMR1"
+freq_mhz = 446.00625
+mode = "nfm"
+bw_khz = 12.5
+group = "pmr"
+description = "PMR446 channel 1"
+
+[[channel]]
+name = "PMR2"
+freq_mhz = 446.01875
+mode = "nfm"
+bw_khz = 12.5
+group = "pmr"
+description = "PMR446 channel 2"
+
+[[channel]]
+name = "PMR3"
+freq_mhz = 446.03125
+mode = "nfm"
+bw_khz = 12.5
+group = "pmr"
+description = "PMR446 channel 3"
+
+[[channel]]
+name = "PMR4"
+freq_mhz = 446.04375
+mode = "nfm"
+bw_khz = 12.5
+group = "pmr"
+description = "PMR446 channel 4"
+
+[[channel]]
+name = "PMR5"
+freq_mhz = 446.05625
+mode = "nfm"
+bw_khz = 12.5
+group = "pmr"
+description = "PMR446 channel 5"
+
+[[channel]]
+name = "PMR6"
+freq_mhz = 446.06875
+mode = "nfm"
+bw_khz = 12.5
+group = "pmr"
+description = "PMR446 channel 6"
+
+[[channel]]
+name = "PMR7"
+freq_mhz = 446.08125
+mode = "nfm"
+bw_khz = 12.5
+group = "pmr"
+description = "PMR446 channel 7"
+
+[[channel]]
+name = "PMR8"
+freq_mhz = 446.09375
+mode = "nfm"
+bw_khz = 12.5
+group = "pmr"
+description = "PMR446 channel 8"
+
+[[channel]]
+name = "CB14"
+freq_mhz = 27.125
+mode = "am"
+bw_khz = 10
+group = "cb"
+description = "CB channel 14"
+
+[[channel]]
+name = "CB19"
+freq_mhz = 27.185
+mode = "am"
+bw_khz = 10
+group = "cb"
+description = "CB channel 19"
+
+[[channel]]
+name = "CB22"
+freq_mhz = 27.225
+mode = "am"
+bw_khz = 10
+group = "cb"
+description = "CB channel 22"
+
+[[channel]]
+name = "TRT_VOT"
+freq_mhz = 5.960
+mode = "am"
+bw_khz = 5
+group = "shortwave"
+description = "TRT Voice of Turkiye. Schedule changes."
+
+[[channel]]
+name = "SW_6005"
+freq_mhz = 6.005
+mode = "am"
+bw_khz = 5
+group = "shortwave"
+description = "Shortwave. Schedule changes."
+
+[[channel]]
+name = "SW_7310"
+freq_mhz = 7.310
+mode = "am"
+bw_khz = 5
+group = "shortwave"
+description = "Shortwave. Schedule changes."
+
+[[channel]]
+name = "SW_9460"
+freq_mhz = 9.460
+mode = "am"
+bw_khz = 5
+group = "shortwave"
+description = "Shortwave. Schedule changes."
+
+[[channel]]
+name = "SW_9770"
+freq_mhz = 9.770
+mode = "am"
+bw_khz = 5
+group = "shortwave"
+description = "Shortwave. Schedule changes."
+
+[[channel]]
+name = "WWV_10"
+freq_mhz = 10.000
+mode = "am"
+bw_khz = 5
+group = "shortwave"
+description = "WWV time signal, hard from Istanbul"
+
+[[channel]]
+name = "WWV_15"
+freq_mhz = 15.000
+mode = "am"
+bw_khz = 5
+group = "shortwave"
+description = "WWV time signal, hard from Istanbul"
+
+[[channel]]
+name = "RWM_10"
+freq_mhz = 9.996
+mode = "am"
+bw_khz = 5
+group = "shortwave"
+description = "Russian time signal, beeps"

@@ -1,0 +1,73 @@
+# CHANGELOG — vocatron
+
+## 2026-10-09
+
+- LTFM ATIS on 128.200 MHz was heard with a hand around the antenna at every
+  whip length. The shortest stop was quieter. Fresh captures, amp off, VGA 20:
+  LNA 16 is flat hiss (channel −69 dBFS, loudest sample 5). LNA 40 holds the
+  carrier 27 dB over a narrow bin and the demod has speech rhythm (channel
+  −50.5, level variation 0.58). 100.000 MHz at the same gain is not a wide
+  FM station (channel −41.4).
+- AM keeps about ±3.5 kHz, then a 2.7 kHz voice filter. The volume control
+  is 0.3 s, so gaps between words are not lifted to the voice. The first
+  50 ms stays silent.
+- `vocatron tui` opens on LTFM ATIS at LNA 40 / VGA 20, amp off. The gate is
+  −58 for AM, −32 for wide FM, and −48 for narrow FM. `[` `]` and `s` hold
+  until the station changes. The length hint is gone from the screen and
+  from `listen`. Debug tests: 17 cases, 10159 assertions.
+- Channel names were not edited. DHMİ AIP lists 128.200 as Yeşilköy / LTBA
+  ATIS, and LTFM ATIS as 128.850 (departure) and 126.350 (arrival).
+  `LTBA_TWR` 118.100 is the arrival/clearance frequency. Departure tower
+  is 118.375, which is not in the file.
+
+## 2026-10-08
+
+- Dev shell, debug/release CMake presets, and `vocatron info`. With the
+  HackRF plugged in this prints board id 4, firmware `n_260928`, API 1.13,
+  and the known serial and part id.
+- `vocatron capture` records receive-only int8 I/Q and prints an averaged
+  FFT: DC spike, narrow bins, and how much hotter the channel is than the
+  quietest equal-width slice. Amp defaults off. VGA above 26 is rejected.
+  A zero-byte stream is an error.
+- `vocatron selftest` checks the FFT on a generated tone (99.825 MHz, −6.0 dBFS).
+- Live 100.0 MHz captures with the whip fully extended did not show an FM
+  broadcast. Default gain left the converter at a few counts. LNA 40 / VGA 26
+  and a later amp-on pass still had no wide station. Files:
+  `samples/fm_lna16.iq`, `samples/fm_lna40.iq`, `samples/fm_amp.iq`.
+- The whip's full length is about 25 cm. At the same high gain, 940 MHz
+  filled and clipped while 100 MHz and 439.150 MHz stayed quiet.
+  `samples/ru1.iq` is the 439.150 capture. The 940 MHz files were deleted.
+- Whip collapsed to about 17 cm and 439.150 captured again
+  (`samples/ru1_17cm.iq`). The narrow carriers near 440.000 and 439.200
+  rose about 8 dB. The repeater channel itself stayed empty.
+- Sample queue between the USB thread and a consumer thread. `ringtest`
+  held 3 s at 2.4 MS/s with nothing dropped. Unit tests cover wrap,
+  a full queue, and a paced 2 s run.
+- Offline wide FM (`demod --mode wfm`). A generated 1 kHz tone comes back
+  out of a 48 kHz WAV. Real 100 MHz captures demodulate to hiss.
+- `listen` plays 48 kHz audio through PulseAudio, with a one-line status
+  of ADC level, clip percent, dropped bytes, and underruns. Named FM
+  channels work. `POWER_FM` for 1.2 s dropped nothing.
+- Offline and live AM (`demod --mode am`, `listen LTFM_ATIS`). A generated
+  1 kHz AM tone comes back. A live 128.200 MHz check with the whip at
+  about 17 cm did not show a voice-wide station. Narrow FM is refused.
+- Offline and live narrow FM (`demod --mode nfm`, `listen CH16`, `listen PMR1`).
+  A generated 1 kHz tone at 3 kHz deviation comes back, and a steady carrier
+  stays quiet. Live 446.006 MHz and 156.800 MHz, whip about 17 cm, LNA 40,
+  VGA 26, amp off, were not voice stations. Speakers stayed off. Dropped 0.
+- Named stations moved to `channels/istanbul.toml` (toml++ 3.4.0).
+  `vocatron list` and `list --group marine` print them. `listen --record`
+  writes the same WAV as `--out`.
+- `--squelch LEVEL` mutes the speaker and the recording from the filtered
+  channel level, not from the hiss. Off unless passed. Opens at the level,
+  holds 0.3 s after a 4 dB drop, fades in 10 ms. The status line shows
+  the frequency, `ch` dBFS, and `sql off|open|shut`. Empty PMR1 at LNA 40 / VGA 26 read
+  −55 dBFS and stayed shut at −40, with demod peak 0. Wide FM at the same
+  gain read about −34 and needed about −20 to shut. Speakers stayed off.
+  Debug tests: 14 cases, 10129 assertions.
+- `vocatron tui` is the station screen. It listens to PMR1 at LNA 16 / VGA 20
+  with the speaker on and squelch at −40. Arrow keys and enter change the
+  station. `[` `]` move the gate, `s` toggles it, `m` mutes, `g` filters the
+  group, `-` `=` step the LNA. A live run showed PMR1 near −68 dBFS with
+  `sql SHUT`, nothing dropped, and no underruns. Debug tests: 17 cases,
+  10159 assertions.
