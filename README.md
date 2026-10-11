@@ -308,4 +308,12 @@ transmit, least of all on aviation or marine frequencies.
 
 ## License
 
-Not yet chosen.
+Copyright 2026 Arcioth.
+
+vocatron is licensed under the [Apache License, Version 2.0](LICENSE). You
+may use, change and share it, including in other projects, as long as you
+keep the license and copyright notice and say what you changed.
+
+The single-header libraries in `third_party/` keep their own licenses:
+doctest and toml++ are MIT, miniaudio is public domain or MIT-0 (see
+`third_party/VERSIONS.md`).
