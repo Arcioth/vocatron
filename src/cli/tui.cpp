@@ -896,7 +896,7 @@ int run_tui() {
   // Start on the airport loop, which is on the air around the clock.
   fill_shown();
   for (int i = 0; i < static_cast<int>(shown.size()); ++i) {
-    if (shown[static_cast<std::size_t>(i)].name == "LTFM_ATIS") {
+    if (shown[static_cast<std::size_t>(i)].name == "LTBA_ATIS") {
       selected = i;
     }
   }

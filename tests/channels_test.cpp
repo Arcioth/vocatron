@@ -20,7 +20,7 @@ const vocatron::Channel *find(const vocatron::ChannelBook &book, const char *nam
 TEST_CASE("channel file keeps the named frequencies") {
   const vocatron::ChannelBook &book = vocatron::channel_book();
   REQUIRE(book.error.empty());
-  CHECK(book.channels.size() == 52);
+  CHECK(book.channels.size() == 58);
 
   const vocatron::Channel *power = find(book, "POWER_FM");
   REQUIRE(power != nullptr);
@@ -28,7 +28,7 @@ TEST_CASE("channel file keeps the named frequencies") {
   CHECK(power->mode == "wfm");
   CHECK(power->group == "broadcast");
 
-  const vocatron::Channel *atis = find(book, "LTFM_ATIS");
+  const vocatron::Channel *atis = find(book, "LTBA_ATIS");
   REQUIRE(atis != nullptr);
   CHECK(atis->hz == 128'200'000);
   CHECK(atis->mode == "am");
@@ -58,6 +58,6 @@ TEST_CASE("channel file keeps the named frequencies") {
     }
     CHECK_FALSE(channel.description.empty());
   }
-  CHECK(air == 11);
+  CHECK(air == 17);
   CHECK(marine == 7);
 }

@@ -38,7 +38,7 @@ void print_usage() {
       "vocatron demod <file.iq> --mode wfm|am|nfm --out <file.wav> [--shift-khz 250]\n"
       "    Demodulate a capture to a 48 kHz WAV. No radio.\n"
       "vocatron listen POWER_FM [--seconds N] [--lna 16] [--vga 20] [--amp] [--out a.wav]\n"
-      "    Play wide FM. LTFM_ATIS is AM. CH16, RU1, and PMR1 are narrow FM.\n"
+      "    Play wide FM. LTBA_ATIS is AM. CH16, RU1, and PMR1 are narrow FM.\n"
       "    Ctrl-C stops. --no-speakers skips the sound device.\n"
       "    --out and --record write a WAV, and both need --seconds.\n"
       "    --squelch -40 mutes while the channel is quieter than -40 dBFS.\n"

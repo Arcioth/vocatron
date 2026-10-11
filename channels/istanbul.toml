@@ -60,21 +60,42 @@ bw_khz = 200
 group = "broadcast"
 description = "Virgin Radio"
 
+# Airband, checked 2026-10-11 against SkyVector (from the Turkish AIP):
+# skyvector.com/airport/LTBA, skyvector.com/airport/LTFM, and
+# learn-atc.com/tools/aerodrome/LTFJ. Towers and ground only talk when a
+# controller is speaking; aircraft are heard better than ground stations.
+
 [[channel]]
-name = "LTFM_ATIS"
+name = "LTBA_ATIS"
 freq_mhz = 128.200
 mode = "am"
 bw_khz = 8.33
 group = "airband"
-description = "Istanbul Airport ATIS, usually a loop"
+description = "Yesilkoy (Ataturk) ATIS, a loop on the air all day"
 
 [[channel]]
-name = "LTFJ_ATIS"
-freq_mhz = 129.825
+name = "LTFM_ATIS_ARR"
+freq_mhz = 126.350
 mode = "am"
 bw_khz = 8.33
 group = "airband"
-description = "Sabiha Gokcen ATIS, usually a loop"
+description = "Istanbul Airport ATIS, arrivals"
+
+[[channel]]
+name = "LTFM_ATIS_DEP"
+freq_mhz = 128.850
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Istanbul Airport ATIS, departures"
+
+[[channel]]
+name = "LTFJ_ATIS"
+freq_mhz = 128.550
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Sabiha Gokcen ATIS"
 
 [[channel]]
 name = "IST_APP"
@@ -82,7 +103,7 @@ freq_mhz = 118.950
 mode = "am"
 bw_khz = 8.33
 group = "airband"
-description = "Istanbul Approach"
+description = "Istanbul approach"
 
 [[channel]]
 name = "IST_RADAR"
@@ -90,55 +111,87 @@ freq_mhz = 120.500
 mode = "am"
 bw_khz = 8.33
 group = "airband"
-description = "Istanbul director"
+description = "Istanbul approach, director"
 
 [[channel]]
-name = "IST_CTL"
+name = "IST_APP_121"
 freq_mhz = 121.100
 mode = "am"
 bw_khz = 8.33
 group = "airband"
-description = "Istanbul en-route"
+description = "Istanbul approach sector"
 
 [[channel]]
-name = "LTFM_TWR"
-freq_mhz = 124.775
+name = "LTBA_ARR"
+freq_mhz = 118.100
 mode = "am"
 bw_khz = 8.33
 group = "airband"
-description = "Istanbul Airport tower"
+description = "Yesilkoy arrival"
 
 [[channel]]
 name = "LTBA_TWR"
-freq_mhz = 118.100
+freq_mhz = 119.800
 mode = "am"
 bw_khz = 8.33
 group = "airband"
 description = "Ataturk tower"
 
 [[channel]]
-name = "LTBA_GND"
+name = "LTBA_GND_N"
+freq_mhz = 121.600
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Ataturk ground, north"
+
+[[channel]]
+name = "LTBA_GND_S"
+freq_mhz = 121.800
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Ataturk ground, south"
+
+[[channel]]
+name = "LTBA_DEL"
 freq_mhz = 121.700
 mode = "am"
 bw_khz = 8.33
 group = "airband"
-description = "Ataturk ground"
+description = "Ataturk clearance delivery"
 
 [[channel]]
-name = "LTBA_DEL"
-freq_mhz = 121.900
+name = "LTFM_TWR"
+freq_mhz = 131.100
 mode = "am"
 bw_khz = 8.33
 group = "airband"
-description = "Ataturk delivery"
+description = "Istanbul Airport tower (one of several, by runway)"
 
 [[channel]]
-name = "IST_INFO"
-freq_mhz = 125.850
+name = "LTFM_TWR_2"
+freq_mhz = 120.950
 mode = "am"
 bw_khz = 8.33
 group = "airband"
-description = "Istanbul VFR information"
+description = "Istanbul Airport tower (one of several, by runway)"
+
+[[channel]]
+name = "LTFM_TWR_3"
+freq_mhz = 124.850
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Istanbul Airport tower (one of several, by runway)"
+
+[[channel]]
+name = "LTFJ_TWR"
+freq_mhz = 118.800
+mode = "am"
+bw_khz = 8.33
+group = "airband"
+description = "Sabiha Gokcen tower"
 
 [[channel]]
 name = "GUARD"

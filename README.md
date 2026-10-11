@@ -47,7 +47,7 @@ Known gaps:
 - No SSB, no FM stereo, no multi-channel listening. RDS shows the station
   name only (not radio text or program type).
 - Some channel names in the file are probably wrong. 128.200 MHz is labeled
-  `LTFM_ATIS` but the Turkish AIP lists it as the Yesilkoy / LTBA loop. See
+  `LTBA_ATIS` but the Turkish AIP lists it as the Yesilkoy / LTBA loop. See
   `HANDOFF.md`.
 - Linux and x86_64 only. The flake targets `x86_64-linux`.
 - Audio output uses PulseAudio (or PipeWire's PulseAudio layer) through
@@ -184,7 +184,7 @@ examples below use the debug build path.
 ./build/debug/vocatron list --group marine
 
 # Listen to a named channel
-./build/debug/vocatron listen LTFM_ATIS --lna 40 --vga 26
+./build/debug/vocatron listen LTBA_ATIS --lna 40 --vga 26
 
 # Listen to a bare frequency (defaults to wfm unless --mode is given)
 ./build/debug/vocatron listen 156.8 --mode nfm
@@ -239,7 +239,7 @@ with the mouse or the keyboard.
 - **Right:** what is playing, a signal bar, and buttons for gain, the RF
   amp, squelch, Save, Scan FM, mute, stop/play and quit.
 
-It opens on LTFM_ATIS at LNA 40, VGA 26, RF amp off. Changing station or
+It opens on LTBA_ATIS at LNA 40, VGA 26, RF amp off. Changing station or
 gain does not restart the radio, so it switches almost at once.
 
 **Finding and keeping stations.** Click **Scan FM**. In about a minute the
@@ -329,7 +329,7 @@ Stations live in `channels/istanbul.toml`. Add one by copying a block:
 
 ```toml
 [[channel]]
-name = "LTFM_ATIS"
+name = "LTBA_ATIS"
 freq_mhz = 128.200
 mode = "am"
 bw_khz = 8.33
