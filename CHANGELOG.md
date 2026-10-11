@@ -20,6 +20,12 @@
   AM, −48 for narrow FM, off for broadcast FM.
 - Audio gaps fixed: playback keeps a 150 ms cushion and refills it after
   running dry, instead of 50 ms with no refill.
+- Wide FM: 15 kHz audio filter (drops the 19 kHz pilot), tighter ±80 kHz
+  channel filter, and a clarity gauge that drives a weak-signal treble cut.
+- RDS decoder: station names and codes. TRT FM decodes as "TRT FM".
+- `vocatron scan` and a Scan FM button: about 60 stations found in about a
+  minute, with clarity and RDS names. Found tab, Save button, Saved tab,
+  and `channels/saved.toml` for the stations you confirm you can hear.
 
 ## 2026-10-09
 

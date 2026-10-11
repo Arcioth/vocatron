@@ -291,11 +291,50 @@ So the gate starts at −52 for AM and −48 for narrow FM. Wide FM stations
 sit about where empty FM noise does, so its gate starts off. The amp toggle
 was not switched on in any test run. Debug tests: 21 cases.
 
+## Scan, RDS, and saved stations (2026-10-11)
+
+The user heard every listed FM channel: POWER, TRT FM, LTFM ATIS clean;
+VIRGIN, METEOROLOJI, RADYO TRAFIK, TRT RADYO1 partly noisy. The list was
+right; the noisy ones are just weaker at this spot.
+
+Wide FM now: channel filter ±80 kHz (301 taps), 15 kHz audio filter (241
+taps, pilot 60 dB down), and a noise gauge on the demodulated signal above
+75 kHz (`clarity`). On generated stations the gauge is about −20 dB at 0 dB
+SNR, −30 at 10, −39 at 20, independent of strength. Real stations
+(captured with amp on, LNA 40, VGA 26): TRT FM −31.7 (clarity 0.98),
+POWER and KRAL −27.3 (0.66), METEOROLOJI and VIRGIN −19.6 (about 0.1). The
+scale is set from those. Below clarity 0.5 a one-pole treble cut slides
+from 15 kHz down to 3 kHz. The amp did not change clarity at this spot.
+
+RDS (`rds.cpp`): 57 kHz down to 0, ±2.4 kHz filter, 9.6 kHz → 9.5 kHz (4
+samples per symbol), RRC symbol sync, Costas loop, biphase pairing,
+differential decode, block sync by checksum. A first version accepted any
+single checking block and made up PI codes (FFE5, 7A5F … for one station).
+Now sync needs two blocks in a row, PI needs to repeat, and name letters
+need to repeat or come in a fully valid group. Every PI since starts with 3
+(Turkey). TRT FM decodes as "TRT FM", PI 3201.
+
+`vocatron scan`: survey 87.5–108 in 0.5 MHz steps (2048-point FFT, 50 ms
+per step, channels on the 100 kHz grid measured 150–850 kHz from the tune),
+humps 4 dB over the 20th-percentile floor, then one 2.5 s recording per
+tuner window decodes every candidate 200–800 kHz from it. Live, amp on,
+LNA 32, VGA 26: 62 stations in 67 s (the first, one-by-one version took
+3 minutes). Not handled yet: images of very strong stations (HackRF image
+rejection is about 30–40 dB); none showed up at this spot.
+
+Station screen: Scan FM fills a Found tab (four clarity dots, RDS name or
+"FM 100.4"); a found station takes its RDS name when it arrives while
+playing. Save writes `channels/saved.toml` (git-ignored, same format as
+istanbul.toml, written to a temp file and renamed) and marks the row ★.
+A live scripted run scanned (57 found), played TRTARABI (clarity 1.00,
+RDS TRTARABI), saved FM 91.4, saw it in the Saved tab, and forgot it again.
+Debug tests: 28 cases.
+
 ## Not done
 
 - `hardware.hackrf.enable` is not in `~/Documents/nixos`. The board opened without it.
 - `bw_khz` does not change the filter yet. Every narrow-FM channel uses the ±8 kHz chain.
-- No `scan`. The parser is still the hand-written one. CLI11 is named in the spec and is not vendored.
+- `scan` is FM broadcast only. The parser is still the hand-written one. CLI11 is named in the spec and is not vendored.
 - Nothing is recorded for a future `wireless` group.
 
 ## LTBA names in the channel file

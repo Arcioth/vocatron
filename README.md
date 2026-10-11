@@ -29,21 +29,23 @@ Verified on real hardware (HackRF One r9 clone, firmware `n_260928`):
   3 s `ringtest` and live `listen` runs.
 - `info`, `capture`, `ringtest`, `listen` and `tui` run on the device.
 
+- Live wide FM with RDS: a scan from Istanbul found about 60 stations and
+  decoded names such as TRT FM, FENOMEN, CGTNTURK, TRTHABER and RADYO 7.
+
 Tested only on synthetic signals (generated test tones in the unit tests):
 
-- Wide FM. No FM broadcast was received with the antenna tried so far. Live
-  captures at 100 MHz demodulate to hiss.
 - Narrow FM. Live tunes of 156.800 MHz (marine channel 16), 446.006 MHz
   (PMR1) and 439.150 MHz found no voice traffic.
 
 Known gaps:
 
-- No `scan` command. Only one channel plays at a time.
+- Scan covers FM broadcast only. Only one channel plays at a time.
 - `bw_khz` in the channel file is parsed but not used. Every narrow FM channel
   uses the same filter (about +-8 kHz).
 - The command-line parser is hand-written. There are no `--help` details per
   subcommand, only one usage text.
-- No SSB, no FM stereo or RDS, no multi-channel listening.
+- No SSB, no FM stereo, no multi-channel listening. RDS shows the station
+  name only (not radio text or program type).
 - Some channel names in the file are probably wrong. 128.200 MHz is labeled
   `LTFM_ATIS` but the Turkish AIP lists it as the Yesilkoy / LTBA loop. See
   `HANDOFF.md`.
@@ -149,6 +151,7 @@ examples below use the debug build path.
 | Command | What it does | Opens the radio |
 |---|---|---|
 | `info` | Print the connected HackRF | yes |
+| `scan` | Find the FM stations this radio can hear, with clarity and RDS names | yes |
 | `selftest` | Check the spectrum math on a fake tone | no |
 | `capture` | Record I/Q to a file and print a spectrum summary | yes |
 | `ringtest` | Stream 2.4 MS/s through the sample queue and count drops | yes |
@@ -160,6 +163,9 @@ examples below use the debug build path.
 ```
 # Is the radio there?
 ./build/debug/vocatron info
+
+# Find every FM station you can receive (about a minute)
+./build/debug/vocatron scan --lna 32 --vga 26 --amp
 
 # Check the FFT code without the radio
 ./build/debug/vocatron selftest
@@ -228,13 +234,28 @@ for wide FM noise, so useful levels differ by mode.
 `vocatron tui` is the easiest way to listen. It needs a terminal and works
 with the mouse or the keyboard.
 
-- **Left:** the station list, with group tabs on top (All, Airband, FM,
-  Marine, Ham, PMR, CB, Shortwave). Click a station to listen to it.
+- **Left:** the station list, with tabs on top: All, Saved, Found, Airband,
+  FM, Marine, Ham, PMR, CB, Shortwave. Click a station to listen to it.
 - **Right:** what is playing, a signal bar, and buttons for gain, the RF
-  amp, squelch, mute, stop/play and quit.
+  amp, squelch, Save, Scan FM, mute, stop/play and quit.
 
 It opens on LTFM_ATIS at LNA 40, VGA 26, RF amp off. Changing station or
 gain does not restart the radio, so it switches almost at once.
+
+**Finding and keeping stations.** Click **Scan FM**. In about a minute the
+Found tab lists every FM station the radio can hear, with four dots for how
+clean it is (●●●● is clean) and its RDS name when one came through. Click
+one to listen. If you can hear it well, click **Save**: it gets a ★ and goes
+to the Saved tab, and to `channels/saved.toml`, which is kept between runs.
+Click the button again (it now says "★ Saved (forget)") to remove it.
+
+While a wide FM station plays you also see:
+
+- **Clarity**, 0 to 1: how far the station sits above FM's noise cliff.
+  Measured from the noise riding on the station, so it does not change
+  with the gain knobs. Below 0.5 a gentle treble cut takes the edge off the
+  hiss, like a car radio does on a weak station.
+- **RDS**: the name the station sends, such as FENOMEN or TRT FM.
 
 | Control | What it does |
 |---|---|
@@ -242,6 +263,8 @@ gain does not restart the radio, so it switches almost at once.
 | VGA − / + | Second amplifier, 0 to 26 dB in steps of 2 |
 | RF amp | About 11 dB more, right at the antenna. Off at start. It turns itself off if the input starts clipping |
 | Squelch − / + and gate | Mute the speaker while the channel is quieter than the level. On for AM (-52 dBFS) and narrow FM (-48). Off for broadcast FM, which never pauses |
+| Save | Keep the playing station in the Saved tab |
+| Scan FM | Find FM stations (stops the radio while it scans) |
 | Mute, Stop/Play, Quit | As named |
 
 Keyboard: arrows and Enter pick a station, `=` / `-` change the LNA, `[` / `]`
@@ -287,7 +310,7 @@ Per mode:
 |---|---|---|
 | `am` | Envelope, keeps about +-3.5 kHz around the carrier | Remove the steady carrier, slow AGC (0.3 s), 2.7 kHz voice filter. First 50 ms is silent while the AGC settles |
 | `nfm` | FM discriminator, keeps about +-8 kHz, +-5 kHz deviation is about full scale | 750 us de-emphasis, voice under 3.4 kHz. First 50 ms silent |
-| `wfm` | FM discriminator on a 240 kHz channel | 50 us de-emphasis (Europe and Turkey, not the US 75 us) |
+| `wfm` | FM discriminator on a channel of about +-80 kHz | 50 us de-emphasis (Europe and Turkey, not the US 75 us), 15 kHz audio filter (drops the 19 kHz pilot), weak-signal treble cut, RDS decoding |
 
 Filters are created once and keep their state for the whole session, because
 rebuilding them per block causes clicks. Each mode has its own speaker gain
@@ -357,6 +380,10 @@ vocatron/
 │       ├── hackrf_session.hpp  device open and identity
 │       ├── listen.cpp/.hpp     live receive pipeline
 │       ├── playback.cpp/.hpp   audio output (miniaudio)
+│       ├── rds.cpp/.hpp        RDS decoder (station name and code)
+│       ├── rx.cpp/.hpp         USB receive callback and stream start/stop
+│       ├── saved.cpp/.hpp      saved stations (channels/saved.toml)
+│       ├── scan.cpp/.hpp       FM band scan
 │       ├── ring.hpp            lock-free SPSC ring
 │       ├── squelch.cpp/.hpp    channel-power gate
 │       └── miniaudio_impl.c, miniaudio_prefix.hpp

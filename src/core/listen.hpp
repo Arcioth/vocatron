@@ -16,6 +16,10 @@ struct ListenView {
   float demod_peak = 0.0f;
   double elapsed_s = 0.0;
   std::uint64_t usb_bytes = 0;
+  // Wide FM only: 0 (buried) to 1 (clean), or -1 for other modes.
+  float clarity = -1.0f;
+  // Wide FM only: the station's RDS name, empty until it arrives.
+  char rds_name[9] = {};
 };
 
 // Return false to stop this listen. The TUI uses this to draw and read keys.

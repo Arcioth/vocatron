@@ -100,6 +100,9 @@ struct Levels {
   std::atomic<std::uint64_t> audio_dropped{0};
   std::atomic<float> channel_dbfs{-200.0f};
   std::atomic<bool> sql_open{false};
+  // Wide FM only. The RDS name is 8 letters packed into one number.
+  std::atomic<float> clarity{-1.0f};
+  std::atomic<std::uint64_t> rds_name{0};
 };
 
 void meter_iq(const std::uint8_t *bytes, std::size_t n, Levels &levels) {
@@ -132,6 +135,29 @@ float bump_peak(std::atomic<float> &slot, float peak) {
   while (peak > prev && !slot.compare_exchange_weak(prev, peak, std::memory_order_relaxed)) {
   }
   return peak;
+}
+
+// 8 letters packed one per byte (first in the low byte) into a trimmed,
+// NUL-ended string.
+void unpack_name(std::uint64_t packed, char out[9]) {
+  int start = 0;
+  int end = 0;
+  char letters[8];
+  for (int i = 0; i < 8; ++i) {
+    letters[i] = static_cast<char>((packed >> (8 * i)) & 0xFFu);
+  }
+  while (start < 8 && (letters[start] == ' ' || letters[start] == '\0')) {
+    ++start;
+  }
+  end = 8;
+  while (end > start && (letters[end - 1] == ' ' || letters[end - 1] == '\0')) {
+    --end;
+  }
+  int n = 0;
+  for (int i = start; i < end; ++i) {
+    out[n++] = letters[i];
+  }
+  out[n] = '\0';
 }
 
 enum class Demod { Wfm, Am, Nfm };
@@ -218,6 +244,9 @@ public:
     }
     return wfm_ ? wfm_->channel_dbfs() : -200.0f;
   }
+
+  float clarity() const { return wfm_ ? wfm_->clarity() : -1.0f; }
+  std::uint64_t rds_name() const { return wfm_ ? wfm_->rds_name_packed() : 0; }
 
 private:
   Demod demod_ = Demod::Wfm;
@@ -420,6 +449,8 @@ int run_listen(const ListenConfig &config) {
         levels.total_samples.store(0, std::memory_order_relaxed);
         levels.raw_peak.store(0.0f, std::memory_order_relaxed);
         levels.channel_dbfs.store(-200.0f, std::memory_order_relaxed);
+        levels.clarity.store(-1.0f, std::memory_order_relaxed);
+        levels.rds_name.store(0, std::memory_order_relaxed);
       }
       std::size_t n = iq_ring.try_read(chunk.data(), chunk.size());
       if (n == 0) {
@@ -446,6 +477,8 @@ int run_listen(const ListenConfig &config) {
       meter_iq(chunk.data(), n, levels);
       const std::size_t got = decoder.process(chunk.data(), n, audio.data(), audio.size());
       const float channel_db = decoder.channel_dbfs();
+      levels.clarity.store(decoder.clarity(), std::memory_order_relaxed);
+      levels.rds_name.store(decoder.rds_name(), std::memory_order_relaxed);
       if (got > 0) {
         if (config.squelch_enabled != nullptr && config.squelch_level != nullptr) {
           squelch.set_level(config.squelch_enabled->load(std::memory_order_relaxed),
@@ -520,6 +553,8 @@ int run_listen(const ListenConfig &config) {
     view.demod_peak = levels.raw_peak.load(std::memory_order_relaxed);
     view.elapsed_s = elapsed;
     view.usb_bytes = sink.usb_bytes.load(std::memory_order_relaxed);
+    view.clarity = levels.clarity.load(std::memory_order_relaxed);
+    unpack_name(levels.rds_name.load(std::memory_order_relaxed), view.rds_name);
     return config.on_tick(view, config.tick_user);
   };
   if (config.speakers) {

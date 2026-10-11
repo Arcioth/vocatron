@@ -16,6 +16,8 @@
 
 #include "core/channels.hpp"
 #include "core/listen.hpp"
+#include "core/saved.hpp"
+#include "core/scan.hpp"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
@@ -25,7 +27,9 @@
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
@@ -44,8 +48,9 @@ struct Group {
 };
 
 constexpr Group kGroups[] = {
-    {"all", "All"},     {"airband", "Airband"}, {"broadcast", "FM"}, {"marine", "Marine"},
-    {"amateur", "Ham"}, {"pmr", "PMR"},         {"cb", "CB"},        {"shortwave", "Shortwave"},
+    {"all", "All"},      {"saved", "Saved"},         {"found", "Found"}, {"airband", "Airband"},
+    {"broadcast", "FM"}, {"marine", "Marine"},       {"amateur", "Ham"}, {"pmr", "PMR"},
+    {"cb", "CB"},        {"shortwave", "Shortwave"},
 };
 
 // Squelch and mute change many times a second while audio plays, so they
@@ -245,6 +250,139 @@ private:
   std::string retune_mode_;
 };
 
+// Runs an FM scan on its own thread. The receiver must be stopped first,
+// because the scan opens the HackRF itself.
+class Scanner {
+public:
+  explicit Scanner(ScreenInteractive *screen) : screen_(screen) {}
+  ~Scanner() { cancel(true); }
+
+  Scanner(const Scanner &) = delete;
+  Scanner &operator=(const Scanner &) = delete;
+
+  struct State {
+    bool running = false;
+    float fraction = 0.0f;
+    std::string what;
+  };
+
+  void start(const ScanConfig &config) {
+    cancel(true);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      running_ = true;
+      finished_ = false;
+      cancel_ = false;
+      fraction_ = 0.0f;
+      what_ = "starting";
+    }
+    thread_ = std::thread([this, config] {
+      std::vector<ScanHit> hits;
+      const int rc = run_fm_scan(config, &hits, &Scanner::progress, this);
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        hits_ = std::move(hits);
+        rc_ = rc;
+        running_ = false;
+        finished_ = true;
+      }
+      screen_->PostEvent(Event::Custom);
+    });
+  }
+
+  // Stops the scan. `discard` drops what it found so far.
+  void cancel(bool discard) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      cancel_ = true;
+    }
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    running_ = false;
+    if (discard) {
+      finished_ = false;
+    }
+  }
+
+  State state() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    State out;
+    out.running = running_;
+    out.fraction = fraction_;
+    out.what = what_;
+    return out;
+  }
+
+  // Once per finished scan: what it found.
+  bool take_result(std::vector<ScanHit> *hits, int *rc) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!finished_) {
+      return false;
+    }
+    finished_ = false;
+    *hits = hits_;
+    *rc = rc_;
+    return true;
+  }
+
+private:
+  static bool progress(float fraction, const char *what, void *user) {
+    auto *self = static_cast<Scanner *>(user);
+    bool keep = true;
+    {
+      std::lock_guard<std::mutex> lock(self->mutex_);
+      self->fraction_ = fraction;
+      self->what_ = what;
+      keep = !self->cancel_;
+    }
+    self->screen_->PostEvent(Event::Custom);
+    return keep;
+  }
+
+  ScreenInteractive *screen_;
+  std::thread thread_;
+  std::mutex mutex_;
+  bool running_ = false;
+  bool finished_ = false;
+  bool cancel_ = false;
+  float fraction_ = 0.0f;
+  std::string what_;
+  std::vector<ScanHit> hits_;
+  int rc_ = 0;
+};
+
+// Four dots for clarity 0..1.
+std::string clarity_dots(float clarity) {
+  const int filled = std::clamp(static_cast<int>(std::lround(clarity * 4.0f)), 0, 4);
+  std::string out;
+  for (int i = 0; i < 4; ++i) {
+    out += i < filled ? "●" : "○";
+  }
+  return out;
+}
+
+Channel channel_from_hit(const ScanHit &hit) {
+  Channel channel;
+  channel.name = scan_hit_name(hit);
+  channel.hz = hit.hz;
+  channel.mode = "wfm";
+  channel.bw_khz = 200;
+  channel.group = "found";
+  char text[160];
+  std::snprintf(text, sizeof text, "Found by scan · clarity %.2f%s%s",
+                static_cast<double>(hit.clarity), hit.rds_name.empty() ? "" : " · RDS ",
+                hit.rds_name.c_str());
+  channel.description = text;
+  if (hit.rds_pi != 0) {
+    char pi[24];
+    std::snprintf(pi, sizeof pi, " · PI %04X", static_cast<unsigned>(hit.rds_pi));
+    channel.description += pi;
+  }
+  return channel;
+}
+
 } // namespace
 
 int run_tui() {
@@ -268,7 +406,13 @@ int run_tui() {
 
   Live live;
   Receiver receiver(&screen, &live);
+  Scanner scanner(&screen);
   Knobs knobs;
+  std::string load_error;
+  std::vector<Channel> saved = load_saved(&load_error);
+  std::vector<Channel> found;
+  // Clarity of each found station, by frequency, for the dots in the list.
+  std::vector<std::pair<std::uint64_t, float>> found_clarity;
 
   // --- Station list -------------------------------------------------------
   int group_index = 0;
@@ -280,25 +424,44 @@ int run_tui() {
   std::vector<std::string> rows;
   int selected = 0;
   Channel now; // what is playing; empty name when stopped
-  std::string message;
+  std::string message = load_error;
 
+  auto is_saved = [&](const Channel &channel) {
+    return std::any_of(saved.begin(), saved.end(),
+                       [&](const Channel &s) { return same_station(s, channel); });
+  };
   auto fill_rows = [&] {
     rows.clear();
     for (const Channel &channel : shown) {
       char row[96];
-      const bool playing = receiver.running() && channel.name == now.name;
-      std::snprintf(row, sizeof row, "%s %-14s %8.3f", playing ? "▶" : " ", channel.name.c_str(),
-                    static_cast<double>(channel.hz) / 1.0e6);
-      rows.emplace_back(row);
+      const bool playing = receiver.running() && same_station(channel, now);
+      std::snprintf(row, sizeof row, "%s %-14.14s %8.3f %s", playing ? "▶" : " ",
+                    channel.name.c_str(), static_cast<double>(channel.hz) / 1.0e6,
+                    is_saved(channel) ? "★" : " ");
+      std::string line = row;
+      if (channel.group == "found") {
+        for (const auto &[hz, clarity] : found_clarity) {
+          if (hz == channel.hz) {
+            line += " " + clarity_dots(clarity);
+          }
+        }
+      }
+      rows.push_back(line);
     }
   };
   auto fill_shown = [&] {
     const std::string keep =
         selected >= 0 && selected < static_cast<int>(shown.size()) ? shown[selected].name : "";
     shown.clear();
-    const char *want = kGroups[group_index].key;
+    const std::string want = kGroups[group_index].key;
+    if (want == "saved" || want == "all") {
+      shown.insert(shown.end(), saved.begin(), saved.end());
+    }
+    if (want == "found") {
+      shown = found;
+    }
     for (const Channel &channel : book.channels) {
-      if (group_index == 0 || channel.group == want) {
+      if (want == "all" || channel.group == want) {
         shown.push_back(channel);
       }
     }
@@ -313,7 +476,10 @@ int run_tui() {
 
   // --- Actions ------------------------------------------------------------
   auto tune = [&](const Channel &station) {
-    const bool same = station.name == now.name;
+    if (scanner.state().running) {
+      scanner.cancel(true);
+    }
+    const bool same = same_station(station, now);
     enter_station(knobs, station.mode, same);
     sync_live(live, knobs);
     message.clear();
@@ -342,8 +508,67 @@ int run_tui() {
     fill_rows();
   };
   auto quit = [&] {
+    scanner.cancel(true);
     receiver.stop();
     screen.Exit();
+  };
+  auto show_group = [&](const char *key) {
+    for (int i = 0; i < static_cast<int>(std::size(kGroups)); ++i) {
+      if (std::string(kGroups[i].key) == key) {
+        group_index = i;
+      }
+    }
+    fill_shown();
+  };
+  // Save the playing station as one you can hear, or forget it again.
+  auto toggle_save = [&] {
+    if (now.name.empty()) {
+      message = "Pick a station first, then Save it if you can hear it.";
+      return;
+    }
+    std::vector<Channel> next = saved;
+    const auto old = std::find_if(next.begin(), next.end(),
+                                  [&](const Channel &s) { return same_station(s, now); });
+    char hz_text[32];
+    std::snprintf(hz_text, sizeof hz_text, "%.1f MHz", static_cast<double>(now.hz) / 1.0e6);
+    std::string done;
+    if (old != next.end()) {
+      done = "Forgot " + old->name + " (" + hz_text + ").";
+      next.erase(old);
+    } else {
+      Channel keep = now;
+      // A found station is named by RDS when RDS has arrived meanwhile.
+      const Receiver::Snapshot snap = receiver.read();
+      if (keep.group == "found" && snap.view.rds_name[0] != '\0') {
+        keep.name = snap.view.rds_name;
+      }
+      keep.group = "saved";
+      next.push_back(keep);
+      std::sort(next.begin(), next.end(),
+                [](const Channel &a, const Channel &b) { return a.hz < b.hz; });
+      done = "Saved " + keep.name + " (" + hz_text + "). It is in the Saved tab.";
+    }
+    std::string error;
+    if (!write_saved(next, &error)) {
+      message = error;
+      return;
+    }
+    saved = next;
+    message = done;
+    fill_shown();
+  };
+  auto toggle_scan = [&] {
+    if (scanner.state().running) {
+      scanner.cancel(false);
+      return;
+    }
+    stop_radio();
+    ScanConfig config;
+    config.lna_db = static_cast<std::uint32_t>(knobs.lna);
+    config.vga_db = static_cast<std::uint32_t>(knobs.vga);
+    config.amp = knobs.amp;
+    message.clear();
+    scanner.start(config);
   };
 
   // --- Components ---------------------------------------------------------
@@ -439,12 +664,17 @@ int run_tui() {
       },
       flat);
   Component quit_button = Button(" Quit ", quit, flat);
+  std::string save_label;
+  Component save_button = Button(&save_label, toggle_save, flat);
+  std::string scan_label;
+  Component scan_button = Button(&scan_label, toggle_scan, flat);
 
   Component controls = Container::Vertical({
       Container::Horizontal({lna_down, lna_up}),
       Container::Horizontal({vga_down, vga_up}),
       amp_button,
       Container::Horizontal({sql_down, sql_up, gate_button}),
+      Container::Horizontal({save_button, scan_button}),
       Container::Horizontal({mute_button, play_button, quit_button}),
   });
   Component body = Container::Horizontal({list_click, controls});
@@ -459,6 +689,9 @@ int run_tui() {
     gate_label = knobs.squelch_on ? " gate on " : " gate off ";
     mute_label = knobs.muted ? " Unmute " : " Mute ";
     play_label = snap.running ? " Stop " : " Play ";
+    const Scanner::State scan = scanner.state();
+    scan_label = scan.running ? " Cancel scan " : " Scan FM ";
+    save_label = !now.name.empty() && is_saved(now) ? " ★ Saved (forget) " : " Save ";
 
     // What is happening, in words.
     std::string sound = "stopped";
@@ -479,7 +712,14 @@ int run_tui() {
     }
 
     Elements info;
-    if (now.name.empty()) {
+    if (scan.running) {
+      info.push_back(text("Scanning the FM band") | bold);
+      info.push_back(gauge(scan.fraction) | color(Color::Cyan));
+      info.push_back(text(scan.what) | dim);
+      info.push_back(paragraph("It finds every station this radio can hear, how clean each one "
+                               "is, and its RDS name. About a minute.") |
+                     dim);
+    } else if (now.name.empty()) {
       info.push_back(text("Click a station to listen.") | bold);
     } else {
       char line[160];
@@ -500,6 +740,18 @@ int run_tui() {
                             : knobs.squelch_on ? Color::Yellow
                                                : Color::Green;
     info.push_back(hbox({text("Signal  "), gauge(fill) | color(bar_color) | flex, text(db)}));
+    if (live_rf && v.clarity >= 0.0f) {
+      char clear[16];
+      std::snprintf(clear, sizeof clear, " %.2f", static_cast<double>(v.clarity));
+      const Color clear_color = v.clarity >= 0.5f   ? Color::Green
+                                : v.clarity >= 0.2f ? Color::Yellow
+                                                    : Color::Red;
+      info.push_back(hbox({text("Clarity "), gauge(v.clarity) | color(clear_color) | flex,
+                           text(clear), text("      ")}));
+    }
+    if (live_rf && v.rds_name[0] != '\0') {
+      info.push_back(hbox({text("RDS     "), text(v.rds_name) | bold | color(Color::Cyan)}));
+    }
     info.push_back(hbox({text("Sound   "), text(sound) | color(sound_color)}));
     info.push_back(separatorEmpty());
 
@@ -522,6 +774,7 @@ int run_tui() {
     info.push_back(hbox({text("Squelch "), sql_down->Render(), text(value), sql_up->Render(),
                          text(" "), gate_button->Render()}));
     info.push_back(separatorEmpty());
+    info.push_back(hbox({save_button->Render(), text("  "), scan_button->Render()}));
     info.push_back(hbox({mute_button->Render(), text("  "), play_button->Render(), text("  "),
                          quit_button->Render()}));
     info.push_back(filler());
@@ -542,10 +795,10 @@ int run_tui() {
     return vbox({
                hbox({text(" vocatron  ") | bold | color(Color::Cyan), tabs->Render()}),
                separator(),
-               hbox({station_list | size(WIDTH, EQUAL, 28), separator(), vbox(info) | flex}) | flex,
+               hbox({station_list | size(WIDTH, EQUAL, 38), separator(), vbox(info) | flex}) | flex,
                separator(),
-               text(" click a station · ↑↓ Enter · = − gain · [ ] squelch · m mute · "
-                    "esc stop · q quit") |
+               text(" click a station · Save the ones you can hear · = − gain · [ ] squelch · "
+                    "m mute · q quit") |
                    dim,
            }) |
            border;
@@ -554,7 +807,38 @@ int run_tui() {
   // Keyboard shortcuts, and housekeeping on each refresh from the radio.
   Component root = CatchEvent(view, [&](Event event) {
     if (event == Event::Custom) {
+      std::vector<ScanHit> hits;
+      int scan_rc = 0;
+      if (scanner.take_result(&hits, &scan_rc)) {
+        if (scan_rc != 0) {
+          message = "The scan could not use the radio. Is the HackRF plugged in and free?";
+        } else {
+          found.clear();
+          found_clarity.clear();
+          for (const ScanHit &hit : hits) {
+            found.push_back(channel_from_hit(hit));
+            found_clarity.emplace_back(hit.hz, hit.clarity);
+          }
+          show_group("found");
+          message =
+              "Found " + std::to_string(found.size()) +
+              " stations (●●●● = clean). Click one to listen, and Save the ones you can hear.";
+        }
+      }
       const Receiver::Snapshot snap = receiver.read();
+      // A found station without a name takes its RDS name once it arrives.
+      if (snap.running && now.group == "found" && snap.view.rds_name[0] != '\0' &&
+          now.name != snap.view.rds_name) {
+        for (Channel &channel : found) {
+          if (same_station(channel, now)) {
+            channel.name = snap.view.rds_name;
+          }
+        }
+        now.name = snap.view.rds_name;
+        if (std::string(kGroups[group_index].key) == "found") {
+          fill_shown();
+        }
+      }
       const Receiver::Ending ending = receiver.take_ending();
       if (ending.ended) {
         if (ending.signaled) {
