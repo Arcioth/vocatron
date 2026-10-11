@@ -2,6 +2,14 @@
 
 ## 2026-10-11
 
+- Custom scan list. Type `145.625` or `144-146/12.5` on the station screen
+  (or `vocatron custom …`) and Scan list walks those frequencies, stopping
+  when one talks. The list is `channels/custom.toml`, which git ignores.
+- Restricted frequencies: `channels/restricted.toml` blocks marine channel
+  67 (coast guard, 156.375 MHz). It was removed from the station list. The
+  receiver and the station screen refuse to tune it until you confirm
+  licence, permission, and responsibility for that session. Recording it
+  is always refused. `tests/restricted_test.cpp` covers the book.
 - Renamed from radiovoc to vocatron (folder, CMake targets, namespace,
   docs). Published at https://github.com/Arcioth/vocatron with a README.
 - Speaker gain per mode: AM 0.05, narrow FM 1.0, wide FM 0.25. Narrow FM

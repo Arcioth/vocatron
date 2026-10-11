@@ -2,6 +2,23 @@
 
 Receive-only HackRF voice receiver. Spec is `AGENTS.md`. Independent of Raphael.
 
+## State (2026-10-11, evening)
+
+`channels/restricted.toml` holds public-safety ranges. The only entry is
+marine channel 67, 156.3625–156.3875 MHz (coast guard / SAR). `CH67_SG` is
+gone from `channels/istanbul.toml`. `listen` and the station screen will
+not tune a listed frequency until the person confirms licence and
+permission (station screen: Enter on the warning panel; command line:
+type `KABUL EDIYORUM`, or `--accept-responsibility`). The acceptance is
+kept in memory for that run only. Recording a restricted frequency is
+refused on every path. Tests: `tests/restricted_test.cpp`.
+
+Custom scan frequencies live in `channels/custom.toml` (gitignored). The
+station screen has a Custom box (`145.625` or `144-146/12.5`, mode AM /
+NFM / WFM) and a Custom tab. Scan list on that tab hops them and stops
+on a call. `vocatron custom` prints or edits the same file. At most 128
+frequencies. Tests: `tests/custom_test.cpp`.
+
 ## State (2026-10-11)
 
 Milestones 1 through 8 are in place, and squelch is in on top of them.

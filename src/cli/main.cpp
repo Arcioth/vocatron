@@ -1,18 +1,24 @@
 #include "core/capture.hpp"
 #include "core/channels.hpp"
+#include "core/custom.hpp"
 #include "core/dsp.hpp"
 #include "core/hackrf_session.hpp"
 #include "core/listen.hpp"
+#include "core/restricted.hpp"
 #include "core/scan.hpp"
 #include "tui.hpp"
 
 #include <hackrf.h>
 
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
+#include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -33,6 +39,10 @@ void print_usage() {
       "vocatron search <band> [--seconds 45] [--lna 40] [--vga 26] [--amp]\n"
       "    Watch a band and list the channels in use. Bands: airband, marine,\n"
       "    2m, 70cm, pmr, cb, sw49, sw41, sw31, sw25.\n"
+      "vocatron custom [145.625,439.150 | 144-146/12.5] [--mode nfm] [--replace]\n"
+      "    Add frequencies to the custom scan list (channels/custom.toml).\n"
+      "    No frequencies prints the list. --clear empties it. --remove 145.625\n"
+      "    drops one. Open the Custom tab and press Scan list to walk them.\n"
       "vocatron list [--group airband]\n"
       "    Print the stations in channels/istanbul.toml.\n"
       "vocatron tui\n"
@@ -47,7 +57,61 @@ void print_usage() {
       "    --squelch -40 mutes while the channel is quieter than -40 dBFS.\n"
       "    Empty narrow FM sat near -55, so -40 stays shut. Wide FM at\n"
       "    LNA 40 sat near -34, so use about -20 there.\n"
-      "    A frequency works too: vocatron listen 156.8 --mode nfm\n");
+      "    A frequency works too: vocatron listen 156.8 --mode nfm\n"
+      "    Restricted frequencies (channels/restricted.toml) ask you to confirm\n"
+      "    licence and permission first, or --accept-responsibility. They are\n"
+      "    never recorded.\n");
+}
+
+// A restricted frequency (channels/restricted.toml) needs the person to
+// confirm licence and permission: --accept-responsibility, or typing the
+// phrase at a terminal. Returns false when the listen must not go ahead.
+bool confirm_restricted(uint64_t hz, bool accept_flag, bool recording, bool *confirmed) {
+  const vocatron::RestrictionBook &book = vocatron::restriction_book();
+  if (!book.error.empty()) {
+    std::fprintf(stderr, "%s\n", book.error.c_str());
+  }
+  const vocatron::Restriction *r = vocatron::find_restriction(hz);
+  if (r == nullptr) {
+    return true;
+  }
+  std::fprintf(stderr, "\n%s\n\n", vocatron::restriction_warning(*r).c_str());
+  if (recording) {
+    std::fprintf(stderr, "Recording a restricted frequency is refused.\n");
+    return false;
+  }
+  if (accept_flag) {
+    std::fprintf(stderr, "--accept-responsibility given: you confirmed licence and permission.\n");
+    *confirmed = true;
+    return true;
+  }
+  if (isatty(STDIN_FILENO) != 1) {
+    std::fprintf(stderr, "Not a terminal. Pass --accept-responsibility to confirm.\n");
+    return false;
+  }
+  std::fprintf(stderr, "Type %s to confirm, anything else cancels: ", vocatron::kAcceptPhrase);
+  std::string line;
+  std::getline(std::cin, line);
+  // Accept the Turkish dotted capital I as well as plain I, any case.
+  std::string plain;
+  for (std::size_t i = 0; i < line.size(); ++i) {
+    if (i + 1 < line.size() && static_cast<unsigned char>(line[i]) == 0xC4 &&
+        static_cast<unsigned char>(line[i + 1]) == 0xB0) {
+      plain += 'I';
+      ++i;
+    } else {
+      plain += static_cast<char>(std::toupper(static_cast<unsigned char>(line[i])));
+    }
+  }
+  while (!plain.empty() && plain.back() == ' ') {
+    plain.pop_back();
+  }
+  if (plain != vocatron::kAcceptPhrase) {
+    std::fprintf(stderr, "Cancelled.\n");
+    return false;
+  }
+  *confirmed = true;
+  return true;
 }
 
 bool parse_mhz(const char *text, uint64_t *hz) {
@@ -301,6 +365,7 @@ int main(int argc, char **argv) {
   if (std::strcmp(argv[1], "listen") == 0) {
     vocatron::ListenConfig config;
     const char *target = nullptr;
+    bool accept_flag = false;
     const char *mode = nullptr;
     for (int i = 2; i < argc; ++i) {
       const char *arg = argv[i];
@@ -353,6 +418,8 @@ int main(int argc, char **argv) {
         config.squelch = true;
       } else if (std::strcmp(arg, "--no-speakers") == 0) {
         config.speakers = false;
+      } else if (std::strcmp(arg, "--accept-responsibility") == 0) {
+        accept_flag = true;
       } else if (arg[0] != '-' && target == nullptr) {
         target = arg;
       } else {
@@ -392,6 +459,10 @@ int main(int argc, char **argv) {
       }
       config.mode = named_mode;
       config.group = named_group;
+    }
+    if (!confirm_restricted(config.channel_hz, accept_flag, config.out_path != nullptr,
+                            &config.permission_confirmed)) {
+      return 2;
     }
     return vocatron::run_listen(config);
   }
@@ -507,6 +578,93 @@ int main(int argc, char **argv) {
         std::printf("%.0f s ago", static_cast<double>(hit.last_heard_s));
       }
       std::printf("\n");
+    }
+    return 0;
+  }
+  if (std::strcmp(argv[1], "custom") == 0) {
+    bool replace = false;
+    bool clear = false;
+    const char *remove_mhz = nullptr;
+    const char *mode = "nfm";
+    std::string spec;
+    for (int i = 2; i < argc; ++i) {
+      const char *arg = argv[i];
+      if (std::strcmp(arg, "--replace") == 0) {
+        replace = true;
+      } else if (std::strcmp(arg, "--clear") == 0) {
+        clear = true;
+      } else if (std::strcmp(arg, "--mode") == 0) {
+        if (i + 1 >= argc) {
+          std::fprintf(stderr, "--mode needs am, nfm, or wfm\n");
+          return 2;
+        }
+        mode = argv[++i];
+      } else if (std::strcmp(arg, "--remove") == 0) {
+        if (i + 1 >= argc) {
+          std::fprintf(stderr, "--remove needs a frequency in MHz\n");
+          return 2;
+        }
+        remove_mhz = argv[++i];
+      } else if (arg[0] == '-') {
+        std::fprintf(stderr, "unknown argument: %s\n", arg);
+        print_usage();
+        return 2;
+      } else if (!spec.empty()) {
+        spec += " ";
+        spec += arg;
+      } else {
+        spec = arg;
+      }
+    }
+    std::string error;
+    if (clear) {
+      if (!vocatron::write_custom({}, &error)) {
+        std::fprintf(stderr, "%s\n", error.c_str());
+        return 1;
+      }
+      std::printf("Custom scan list cleared.\n");
+      return 0;
+    }
+    if (remove_mhz != nullptr) {
+      uint64_t hz = 0;
+      if (!parse_mhz(remove_mhz, &hz)) {
+        std::fprintf(stderr, "--remove needs a frequency in MHz\n");
+        return 2;
+      }
+      int removed = 0;
+      if (!vocatron::drop_custom_hz(hz, &removed, &error)) {
+        std::fprintf(stderr, "%s\n", error.c_str());
+        return 1;
+      }
+      std::printf("Removed %d.\n", removed);
+      return 0;
+    }
+    if (!spec.empty()) {
+      const vocatron::CustomParse parsed = vocatron::parse_custom_frequencies(spec, mode);
+      if (!parsed.error.empty()) {
+        std::fprintf(stderr, "%s\n", parsed.error.c_str());
+        return 2;
+      }
+      int added = 0;
+      if (!vocatron::store_custom(parsed.channels, replace, &added, &error)) {
+        std::fprintf(stderr, "%s\n", error.c_str());
+        return 1;
+      }
+      std::printf("Added %d.\n", added);
+    }
+    const std::vector<vocatron::Channel> list = vocatron::load_custom(&error);
+    if (!error.empty()) {
+      std::fprintf(stderr, "%s\n", error.c_str());
+      return 1;
+    }
+    if (list.empty()) {
+      std::printf(
+          "No custom frequencies yet. Example: vocatron custom 145.625,439.150 --mode nfm\n");
+      return 0;
+    }
+    std::printf("%zu custom frequencies\n", list.size());
+    for (const vocatron::Channel &channel : list) {
+      std::printf("%10s  %s\n", channel.name.c_str(), channel.mode.c_str());
     }
     return 0;
   }

@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 
@@ -42,7 +43,8 @@ bool write_saved(const std::vector<Channel> &stations, std::string *error) {
   return write_saved_file(saved_path(), stations, error);
 }
 
-std::vector<Channel> load_saved_file(const std::string &path, std::string *error) {
+std::vector<Channel> load_saved_file(const std::string &path, std::string *error,
+                                     const char *group) {
   std::vector<Channel> out;
   std::error_code ec;
   if (!std::filesystem::is_regular_file(path, ec)) {
@@ -71,7 +73,7 @@ std::vector<Channel> load_saved_file(const std::string &path, std::string *error
     const double mhz = (*row)["freq_mhz"].value_or(0.0);
     channel.mode = (*row)["mode"].value_or(std::string());
     channel.bw_khz = (*row)["bw_khz"].value_or(0.0);
-    channel.group = "saved";
+    channel.group = group != nullptr ? group : "saved";
     channel.description = (*row)["description"].value_or(std::string());
     if (channel.name.empty() || mhz < 1.0 ||
         (channel.mode != "wfm" && channel.mode != "am" && channel.mode != "nfm")) {
@@ -84,7 +86,7 @@ std::vector<Channel> load_saved_file(const std::string &path, std::string *error
 }
 
 bool write_saved_file(const std::string &path, const std::vector<Channel> &stations,
-                      std::string *error) {
+                      std::string *error, const char *group) {
   const std::string temp = path + ".new";
   {
     std::ofstream file(temp, std::ios::trunc);
@@ -94,8 +96,13 @@ bool write_saved_file(const std::string &path, const std::vector<Channel> &stati
       }
       return false;
     }
-    file << "# Stations you listened to and saved in vocatron tui.\n"
-            "# Same format as istanbul.toml. Safe to edit by hand.\n";
+    if (group != nullptr && std::strcmp(group, "custom") == 0) {
+      file << "# Frequencies you asked vocatron to scan.\n"
+              "# Same format as istanbul.toml. Safe to edit by hand.\n";
+    } else {
+      file << "# Stations you listened to and saved in vocatron tui.\n"
+              "# Same format as istanbul.toml. Safe to edit by hand.\n";
+    }
     for (const Channel &channel : stations) {
       char mhz[32];
       std::snprintf(mhz, sizeof mhz, "%.4f", static_cast<double>(channel.hz) / 1.0e6);
@@ -104,7 +111,7 @@ bool write_saved_file(const std::string &path, const std::vector<Channel> &stati
            << "freq_mhz = " << mhz << "\n"
            << "mode = " << quoted(channel.mode) << "\n"
            << "bw_khz = " << channel.bw_khz << "\n"
-           << "group = \"saved\"\n"
+           << "group = " << quoted(group != nullptr ? group : "saved") << "\n"
            << "description = " << quoted(channel.description) << "\n";
     }
     if (!file) {

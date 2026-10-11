@@ -13,6 +13,7 @@
 #include "dsp.hpp"
 #include "hackrf_session.hpp"
 #include "playback.hpp"
+#include "restricted.hpp"
 #include "ring.hpp"
 #include "rx.hpp"
 #include "squelch.hpp"
@@ -297,6 +298,14 @@ int run_listen(const ListenConfig &config) {
   if (config.out_path != nullptr && config.seconds == 0.0) {
     std::fprintf(stderr, "--out or --record needs --seconds, so the recording has an end\n");
     return 1;
+  }
+  {
+    std::string why;
+    if (!listen_allowed(config.channel_hz, config.permission_confirmed,
+                        config.out_path != nullptr, &why)) {
+      std::fprintf(stderr, "%s\n", why.c_str());
+      return 1;
+    }
   }
   if (config.group != nullptr && std::strcmp(config.group, "wireless") == 0 &&
       config.out_path != nullptr) {
@@ -606,6 +615,11 @@ int run_listen(const ListenConfig &config) {
     const bool new_station = retune.channel_hz != tuned_hz || next != tuned_demod;
     // A recording is one station from start to end.
     if (new_station && config.out_path != nullptr) {
+      return false;
+    }
+    // Restricted frequencies need confirmed permission, here as at start-up.
+    if (new_station && !listen_allowed(retune.channel_hz, retune.permission_confirmed,
+                                       config.out_path != nullptr, nullptr)) {
       return false;
     }
     if (new_station &&

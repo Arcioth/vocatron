@@ -39,6 +39,9 @@ struct ListenRetune {
   std::uint32_t vga_db = 20;
   // The RF amp. Only true when the person turned it on.
   bool amp = false;
+  // The person confirmed licence and permission for a restricted
+  // frequency (see restricted.hpp). Without it a restricted retune fails.
+  bool permission_confirmed = false;
 };
 
 struct ListenConfig {
@@ -70,6 +73,10 @@ struct ListenConfig {
   std::atomic<bool> *pass_audio = nullptr;
   // Set when Ctrl-C or SIGTERM ended the run.
   bool *signal_stop = nullptr;
+  // The person confirmed licence and permission for a restricted frequency
+  // (see restricted.hpp). Without it run_listen refuses to tune one, and a
+  // restricted frequency is never recorded either way.
+  bool permission_confirmed = false;
   // Station changes from the tick. Null means one station per run.
   // Not allowed while recording: the run stops with an error instead.
   ListenRetune *retune = nullptr;

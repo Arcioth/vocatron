@@ -1,0 +1,17 @@
+# Restricted frequencies.
+#
+# vocatron will not tune to anything inside these ranges until you confirm
+# that you hold the licence and permission to listen, and that you take all
+# responsibility. It never records them.
+#
+# Haberleşmenin gizliliği (TCK 132, 133): polis, jandarma, sahil güvenlik,
+# itfaiye ve ambulans gibi kamu güvenliği haberleşmelerini dinlemek, kaydetmek
+# veya paylaşmak suçtur. See the Legal section of README.md.
+#
+# Add a range by copying a block. from_mhz and to_mhz are inclusive.
+
+[[restricted]]
+name = "Coast guard, marine channel 67"
+from_mhz = 156.3625
+to_mhz = 156.3875
+reason = "Sahil Güvenlik / coast guard and search and rescue"

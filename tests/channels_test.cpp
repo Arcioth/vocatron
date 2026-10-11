@@ -20,7 +20,7 @@ const vocatron::Channel *find(const vocatron::ChannelBook &book, const char *nam
 TEST_CASE("channel file keeps the named frequencies") {
   const vocatron::ChannelBook &book = vocatron::channel_book();
   REQUIRE(book.error.empty());
-  CHECK(book.channels.size() == 58);
+  CHECK(book.channels.size() == 57);
 
   const vocatron::Channel *power = find(book, "POWER_FM");
   REQUIRE(power != nullptr);
@@ -59,5 +59,5 @@ TEST_CASE("channel file keeps the named frequencies") {
     CHECK_FALSE(channel.description.empty());
   }
   CHECK(air == 17);
-  CHECK(marine == 7);
+  CHECK(marine == 6);
 }

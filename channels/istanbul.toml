@@ -242,14 +242,6 @@ group = "marine"
 description = "Istanbul VTS Turkeli"
 
 [[channel]]
-name = "CH67_SG"
-freq_mhz = 156.375
-mode = "nfm"
-bw_khz = 25
-group = "marine"
-description = "Coast guard"
-
-[[channel]]
 name = "CH08"
 freq_mhz = 156.400
 mode = "nfm"

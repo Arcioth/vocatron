@@ -24,9 +24,11 @@ std::vector<Channel> load_saved(std::string *error);
 bool write_saved(const std::vector<Channel> &stations, std::string *error);
 
 // The same, for a file of your choosing (tests use a temporary one).
-std::vector<Channel> load_saved_file(const std::string &path, std::string *error);
+// `group` is written into the file and stamped on each loaded station.
+std::vector<Channel> load_saved_file(const std::string &path, std::string *error,
+                                     const char *group = "saved");
 bool write_saved_file(const std::string &path, const std::vector<Channel> &stations,
-                      std::string *error);
+                      std::string *error, const char *group = "saved");
 
 // The same station: same frequency (within 25 kHz) and mode.
 bool same_station(const Channel &a, const Channel &b);

@@ -15,7 +15,9 @@
 #include "tui_model.hpp"
 
 #include "core/channels.hpp"
+#include "core/custom.hpp"
 #include "core/listen.hpp"
+#include "core/restricted.hpp"
 #include "core/saved.hpp"
 #include "core/scan.hpp"
 
@@ -49,9 +51,9 @@ struct Group {
 };
 
 constexpr Group kGroups[] = {
-    {"all", "All"},      {"saved", "Saved"},         {"found", "Found"}, {"airband", "Airband"},
-    {"broadcast", "FM"}, {"marine", "Marine"},       {"amateur", "Ham"}, {"pmr", "PMR"},
-    {"cb", "CB"},        {"shortwave", "Shortwave"},
+    {"all", "All"},         {"saved", "Saved"},  {"custom", "Custom"},       {"found", "Found"},
+    {"airband", "Airband"}, {"broadcast", "FM"}, {"marine", "Marine"},       {"amateur", "Ham"},
+    {"pmr", "PMR"},         {"cb", "CB"},        {"shortwave", "Shortwave"},
 };
 
 // Squelch and mute change many times a second while audio plays, so they
@@ -115,7 +117,9 @@ public:
     bool signaled = false;
   };
 
-  void start(const Channel &station, const Knobs &knobs) {
+  // `permission`: the person confirmed licence and permission for a
+  // restricted frequency. The receiver refuses one without it.
+  void start(const Channel &station, const Knobs &knobs, bool permission) {
     stop();
     station_ = station;
     {
@@ -127,10 +131,10 @@ public:
       stop_req_ = false;
       pending_ = false;
     }
-    thread_ = std::thread([this, knobs] { run(knobs); });
+    thread_ = std::thread([this, knobs, permission] { run(knobs, permission); });
   }
 
-  void change(const Channel &station, const Knobs &knobs) {
+  void change(const Channel &station, const Knobs &knobs, bool permission) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!running_) {
       return;
@@ -141,6 +145,7 @@ public:
     change_.lna_db = static_cast<std::uint32_t>(knobs.lna);
     change_.vga_db = static_cast<std::uint32_t>(knobs.vga);
     change_.amp = knobs.amp;
+    change_.permission_confirmed = permission;
   }
 
   void stop() {
@@ -182,7 +187,7 @@ public:
   }
 
 private:
-  void run(Knobs knobs) {
+  void run(Knobs knobs, bool permission) {
     ListenConfig config;
     config.channel_hz = station_.hz;
     config.name = station_.name.c_str();
@@ -191,6 +196,7 @@ private:
     config.lna_db = static_cast<std::uint32_t>(knobs.lna);
     config.vga_db = static_cast<std::uint32_t>(knobs.vga);
     config.amp = knobs.amp;
+    config.permission_confirmed = permission;
     config.speakers = true;
     config.squelch = knobs.squelch_on;
     config.squelch_dbfs = knobs.squelch_db;
@@ -481,6 +487,11 @@ int run_tui() {
   Knobs knobs;
   std::string load_error;
   std::vector<Channel> saved = load_saved(&load_error);
+  std::string custom_error;
+  std::vector<Channel> custom = load_custom(&custom_error);
+  if (!custom_error.empty()) {
+    load_error = load_error.empty() ? custom_error : load_error + " " + custom_error;
+  }
   std::vector<Channel> found;
   // The tag shown after each found station, by frequency: clarity dots
   // for FM, "talk ×N" or "steady" for a band search.
@@ -535,7 +546,9 @@ int run_tui() {
       char row[96];
       const bool playing = receiver.running() && same_station(channel, now);
       std::snprintf(row, sizeof row, " %8.3f %s", static_cast<double>(channel.hz) / 1.0e6,
-                    is_saved(channel) ? "★" : " ");
+                    find_restriction(channel.hz) != nullptr ? "⚠"
+                    : is_saved(channel)                     ? "★"
+                                                            : " ");
       std::string line =
           std::string(playing ? "▶ " : "  ") + fit_width(name_for(channel), 14) + row;
       if (channel.group == "found") {
@@ -556,6 +569,9 @@ int run_tui() {
     if (want == "saved" || want == "all") {
       shown.insert(shown.end(), saved.begin(), saved.end());
     }
+    if (want == "custom" || want == "all") {
+      shown.insert(shown.end(), custom.begin(), custom.end());
+    }
     if (want == "found") {
       shown = found;
     }
@@ -573,19 +589,42 @@ int run_tui() {
     fill_rows();
   };
 
+  // --- Restricted frequencies -------------------------------------------
+  // Accepted this session, one entry at a time; never remembered on disk.
+  std::vector<const Restriction *> accepted;
+  bool asking = false; // the confirmation panel is showing
+  Channel asked_for;   // the station waiting behind it
+  auto permitted = [&](const Channel &station) {
+    const Restriction *r = find_restriction(station.hz);
+    return r == nullptr || std::find(accepted.begin(), accepted.end(), r) != accepted.end();
+  };
+  if (!restriction_book().error.empty()) {
+    message = restriction_book().error;
+  }
+
   // --- Actions ------------------------------------------------------------
   auto tune = [&](const Channel &station) {
     if (scanner.state().running) {
       scanner.cancel(true);
     }
+    // A restricted frequency waits for the person to confirm licence and
+    // permission. Nothing is tuned until then.
+    if (!permitted(station)) {
+      asked_for = station;
+      asking = true;
+      hop.on = false;
+      message.clear();
+      return;
+    }
     const bool same = same_station(station, now);
     enter_station(knobs, station.mode, same);
     sync_live(live, knobs);
     message.clear();
+    const bool permission = find_restriction(station.hz) != nullptr;
     if (receiver.running()) {
-      receiver.change(station, knobs);
+      receiver.change(station, knobs, permission);
     } else {
-      receiver.start(station, knobs);
+      receiver.start(station, knobs, permission);
     }
     now = station;
     fill_rows();
@@ -599,7 +638,7 @@ int run_tui() {
   // Gain and amp go to the radio; nothing to do when it is stopped.
   auto push_gain = [&] {
     if (!now.name.empty()) {
-      receiver.change(now, knobs);
+      receiver.change(now, knobs, find_restriction(now.hz) != nullptr && permitted(now));
     }
   };
   auto stop_radio = [&] {
@@ -627,7 +666,13 @@ int run_tui() {
   bool naming = false;
   std::string name_text;
   int name_cursor = 0; // starts at the end of the suggested name
-  Component list;      // the station list, built with the other components below
+  // The custom-frequency box. Keys go to it while it is focused.
+  std::string freq_text;
+  int freq_cursor = 0;
+  int custom_mode = 1; // 0 am, 1 nfm, 2 wfm
+  std::vector<std::string> custom_modes = {"AM", "NFM", "WFM"};
+  Component freq_input;
+  Component list; // the station list, built with the other components below
   Channel name_target;
   Component name_input;
   auto start_naming = [&](const std::string &prefill) {
@@ -738,14 +783,26 @@ int run_tui() {
       for (const auto &[hz, tag] : found_tags) {
         steady = steady || (hz == channel.hz && tag == "steady" && channel.group == "found");
       }
-      if (channel.mode != "wfm" && !steady) {
+      // A restricted channel is only scanned after it was accepted.
+      // Broadcast FM never pauses, except a frequency the person typed:
+      // those are what they asked to scan, and a steady one moves on.
+      const bool skip_fm = channel.mode == "wfm" && channel.group != "custom";
+      const bool already = std::any_of(hop.list.begin(), hop.list.end(), [&](const Channel &have) {
+        return same_station(have, channel);
+      });
+      if (!skip_fm && !steady && permitted(channel) && !already) {
         hop.list.push_back(channel);
       }
     }
     hop.quiet.assign(hop.list.size(), 0.0f);
     if (hop.list.size() < 2) {
-      message = "Scan list needs two or more AM or narrow FM stations in this tab "
-                "(Airband, Marine, or a band search in Found).";
+      if (std::string(kGroups[group_index].key) == "custom") {
+        message = "Add at least two custom frequencies, then Scan list. "
+                  "A restricted one is skipped until you accept it.";
+      } else {
+        message = "Scan list needs two or more AM or narrow FM stations in this tab "
+                  "(Airband, Marine, Custom, or a band search in Found).";
+      }
       return;
     }
     hop.on = true;
@@ -789,6 +846,66 @@ int run_tui() {
     if (step_vga(knobs, direction)) {
       push_gain();
     }
+  };
+  auto add_custom = [&] {
+    const char *modes[] = {"am", "nfm", "wfm"};
+    const CustomParse parsed = parse_custom_frequencies(freq_text, modes[custom_mode]);
+    if (!parsed.error.empty()) {
+      message = parsed.error;
+      return;
+    }
+    int added = 0;
+    std::string error;
+    if (!store_custom(parsed.channels, false, &added, &error)) {
+      message = error;
+      return;
+    }
+    custom = load_custom(&error);
+    if (!error.empty()) {
+      message = error;
+      return;
+    }
+    freq_text.clear();
+    freq_cursor = 0;
+    show_group("custom");
+    int restricted = 0;
+    for (const Channel &channel : parsed.channels) {
+      if (find_restriction(channel.hz) != nullptr) {
+        ++restricted;
+      }
+    }
+    message = "Added " + std::to_string(added) +
+              " to Custom. Scan list walks them and stops when one talks.";
+    if (restricted > 0) {
+      message += " A restricted frequency is skipped until you accept the warning.";
+    }
+    list->TakeFocus();
+  };
+  auto drop_custom = [&] {
+    if (selected < 0 || selected >= static_cast<int>(shown.size())) {
+      message = "Pick a custom frequency first.";
+      return;
+    }
+    const Channel &station = shown[static_cast<std::size_t>(selected)];
+    const bool mine = std::any_of(custom.begin(), custom.end(), [&](const Channel &channel) {
+      return same_station(channel, station);
+    });
+    if (!mine) {
+      message = "That station is not in the custom list.";
+      return;
+    }
+    if (hop.on) {
+      hop.on = false;
+    }
+    int removed = 0;
+    std::string error;
+    if (!drop_custom_hz(station.hz, &removed, &error)) {
+      message = error;
+      return;
+    }
+    custom = load_custom(&error);
+    message = error.empty() ? "Dropped " + name_for(station) + " from the custom list." : error;
+    fill_shown();
   };
   Component lna_down = Button(" − ", [&] { lna_step(-1); }, flat);
   Component lna_up = Button(" + ", [&] { lna_step(+1); }, flat);
@@ -869,6 +986,19 @@ int run_tui() {
   Component scan_button = Button(&scan_label, toggle_scan, flat);
   std::string hop_label;
   Component hop_button = Button(&hop_label, toggle_hop, flat);
+  InputOption freq_option = InputOption::Default();
+  freq_option.content = &freq_text;
+  freq_option.multiline = false;
+  freq_option.placeholder = "145.625 or 144-146/12.5";
+  freq_option.on_enter = add_custom;
+  freq_option.cursor_position = &freq_cursor;
+  freq_input = Input(freq_option);
+  Component add_button = Button(" Add ", add_custom, flat);
+  Component drop_button = Button(" Drop ", drop_custom, flat);
+  MenuOption mode_option = MenuOption::Toggle();
+  mode_option.entries = &custom_modes;
+  mode_option.selected = &custom_mode;
+  Component mode_menu = Menu(mode_option);
   MenuOption band_option = MenuOption::Toggle();
   band_option.entries = &band_labels;
   band_option.selected = &band_index;
@@ -881,6 +1011,7 @@ int run_tui() {
       Container::Horizontal({sql_down, sql_up, gate_button}),
       Container::Horizontal({save_button, rename_button, hop_button}),
       Maybe(Container::Horizontal({name_input, name_ok, name_cancel}), &naming),
+      Container::Horizontal({freq_input, mode_menu, add_button, drop_button}),
       Container::Horizontal({band_menu, scan_button}),
       Container::Horizontal({mute_button, play_button, quit_button}),
   });
@@ -1000,6 +1131,9 @@ int run_tui() {
     } else {
       info.push_back(hbox({save_button->Render(), text("  "), hop_button->Render()}));
     }
+    info.push_back(hbox({text("Custom  "), freq_input->Render() | size(WIDTH, EQUAL, 26) | border,
+                         text(" "), mode_menu->Render(), text(" "), add_button->Render(), text(" "),
+                         drop_button->Render()}));
     info.push_back(hbox({text("Search  "), band_menu->Render(), text(" "), scan_button->Render()}));
     info.push_back(hbox({mute_button->Render(), text("  "), play_button->Render(), text("  "),
                          quit_button->Render()}));
@@ -1018,17 +1152,36 @@ int run_tui() {
     }
 
     Element station_list = list->Render() | vscroll_indicator | frame | reflect(list_box);
-    return vbox({
-               hbox({text(" vocatron  ") | bold | color(Color::Cyan), tabs->Render()}),
-               separator(),
-               hbox({station_list | size(WIDTH, EQUAL, 38), separator(), vbox(info) | flex}) | flex,
-               separator(),
-               text(
-                   " click a station · Save what you can hear · Search a band · Scan list stops on "
-                   "talk · q quit") |
-                   dim,
-           }) |
-           border;
+    Element screen =
+        vbox({
+            hbox({text(" vocatron  ") | bold | color(Color::Cyan), tabs->Render()}),
+            separator(),
+            hbox({station_list | size(WIDTH, EQUAL, 38), separator(), vbox(info) | flex}) | flex,
+            separator(),
+            text(" click a station · Save what you can hear · Search a band · Scan list stops on "
+                 "talk · q quit") |
+                dim,
+        }) |
+        border;
+    // A restricted frequency is not tuned until the person accepts the
+    // warning. The panel covers the screen so a click cannot skip it.
+    if (asking) {
+      const Restriction *r = find_restriction(asked_for.hz);
+      const std::string warn = r != nullptr ? restriction_warning(*r) : "Restricted frequency.";
+      Element panel =
+          vbox({
+              text(" Restricted frequency ") | bold | color(Color::Red) | center,
+              separator(),
+              paragraph(warn),
+              separator(),
+              text("Enter  I hold the licence and permission, and I take all responsibility") |
+                  color(Color::Yellow),
+              text("Esc    cancel, tune nothing") | dim,
+          }) |
+          border | size(WIDTH, EQUAL, 76);
+      screen = dbox({screen | dim, panel | center});
+    }
+    return screen;
   });
 
   // Keyboard shortcuts, and housekeeping on each refresh from the radio.
@@ -1140,7 +1293,33 @@ int run_tui() {
       quit();
       return true;
     }
-    // While a name is being typed, keys are letters, not shortcuts.
+    if (asking) {
+      if (event == Event::Escape) {
+        asking = false;
+        message = "Cancelled. Nothing was tuned.";
+        return true;
+      }
+      if (event == Event::Return) {
+        const Restriction *r = find_restriction(asked_for.hz);
+        if (r != nullptr && std::find(accepted.begin(), accepted.end(), r) == accepted.end()) {
+          accepted.push_back(r);
+        }
+        asking = false;
+        tune(asked_for);
+        message = "You confirmed licence and permission. vocatron will not record this.";
+        return true;
+      }
+      // Swallow every other key and click until they accept or cancel.
+      return true;
+    }
+    // While a frequency or a name is being typed, keys are letters, not shortcuts.
+    if (freq_input->Focused()) {
+      if (event == Event::Escape) {
+        list->TakeFocus();
+        return true;
+      }
+      return false;
+    }
     if (naming) {
       if (event == Event::Escape) {
         end_naming();

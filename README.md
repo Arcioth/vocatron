@@ -117,6 +117,19 @@ Then click a channel to listen, **Save** the ones you can hear, or press
 over the gate *and* 8 dB over the quietest level it has seen on that
 channel, moves on after 3 seconds of quiet, and skips steady carriers.
 
+### Custom frequencies
+
+The **Custom** box takes frequencies that are not in the station list.
+
+- One or several: `145.625` or `145.500, 145.625, 439.150`
+- A grid: `144-146/12.5` means 144 to 146 MHz, every 12.5 kHz (at most 128)
+
+Pick **AM**, **NFM**, or **WFM**, then **Add**. They show on the Custom
+tab and in `channels/custom.toml` (that file stays on this machine).
+**Scan list** on that tab walks them and stops when one talks. **Drop**
+removes the highlighted one. A restricted frequency is stored, but Scan
+list skips it until you accept the warning.
+
 ## Command line
 
 | Command | What it does | Radio |
@@ -126,6 +139,7 @@ channel, moves on after 3 seconds of quiet, and skips steady carriers.
 | `listen <name or MHz>` | Play a station, optionally record it | yes |
 | `scan` | Find the FM stations you can receive, with clarity and RDS | yes |
 | `search <band>` | Watch a band and list the channels in use | yes |
+| `custom [frequencies]` | Add or print the custom scan list | no |
 | `tui` | The station screen | yes |
 | `capture <MHz>` | Record raw I/Q and print where the energy is | yes |
 | `demod <file.iq>` | Demodulate a capture to a 48 kHz WAV | no |
@@ -138,6 +152,7 @@ channel, moves on after 3 seconds of quiet, and skips steady carriers.
 ./build/debug/vocatron listen CH16 --seconds 30 --record ch16.wav
 ./build/debug/vocatron scan --lna 32 --vga 26 --amp
 ./build/debug/vocatron search airband --seconds 60
+./build/debug/vocatron custom 145.625,439.150 --mode nfm
 ./build/debug/vocatron demod samples/fm.iq --mode wfm --out fm.wav
 ```
 
@@ -304,6 +319,13 @@ vocatron only receives. Listening rules differ by country, and you are
 responsible for following the law where you use it. vocatron refuses to
 record the `wireless` (wireless microphone) group. Never modify it to
 transmit, least of all on aviation or marine frequencies.
+
+Public-safety ranges live in `channels/restricted.toml`. Marine channel 67
+(coast guard / search and rescue, 156.375 MHz) is the first entry, and it
+is not in the station list. The station screen and `vocatron listen` will
+not tune into a listed range until you confirm that you hold the licence
+and permission and that you take all responsibility. A confirmation lasts
+for that session only. Recording a restricted frequency is always refused.
 
 ### Haberleşmenin Gizliliği (TCK Madde 132 ve 133)
 

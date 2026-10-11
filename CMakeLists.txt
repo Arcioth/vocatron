@@ -32,6 +32,8 @@ add_executable(vocatron
                src/core/rx.cpp
                src/core/scan.cpp
                src/core/saved.cpp
+               src/core/restricted.cpp
+               src/core/custom.cpp
                src/core/squelch.cpp
                src/core/playback.cpp)
 target_include_directories(vocatron PRIVATE src)
@@ -52,10 +54,14 @@ add_executable(vocatron_tests
                tests/rds_test.cpp
                tests/saved_test.cpp
                tests/search_test.cpp
+               tests/restricted_test.cpp
+               tests/custom_test.cpp
                src/core/channels.cpp
                src/core/dsp.cpp
                src/core/rds.cpp
                src/core/saved.cpp
+               src/core/restricted.cpp
+               src/core/custom.cpp
                src/core/scan.cpp
                src/core/rx.cpp
                src/core/playback.cpp

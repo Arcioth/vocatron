@@ -4,3 +4,4 @@ compile_commands.json
 *.iq
 *.wav
 channels/saved.toml
+channels/custom.toml
