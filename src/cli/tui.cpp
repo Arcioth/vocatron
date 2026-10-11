@@ -520,15 +520,24 @@ int run_tui() {
     return std::any_of(saved.begin(), saved.end(),
                        [&](const Channel &s) { return same_station(s, channel); });
   };
+  // A station you saved shows your name for it in every tab.
+  auto name_for = [&](const Channel &channel) {
+    for (const Channel &mine : saved) {
+      if (same_station(mine, channel)) {
+        return mine.name;
+      }
+    }
+    return channel.name;
+  };
   auto fill_rows = [&] {
     rows.clear();
     for (const Channel &channel : shown) {
       char row[96];
       const bool playing = receiver.running() && same_station(channel, now);
-      std::snprintf(row, sizeof row, "%s %-14.14s %8.3f %s", playing ? "▶" : " ",
-                    channel.name.c_str(), static_cast<double>(channel.hz) / 1.0e6,
+      std::snprintf(row, sizeof row, " %8.3f %s", static_cast<double>(channel.hz) / 1.0e6,
                     is_saved(channel) ? "★" : " ");
-      std::string line = row;
+      std::string line =
+          std::string(playing ? "▶ " : "  ") + fit_width(name_for(channel), 14) + row;
       if (channel.group == "found") {
         for (const auto &[hz, tag] : found_tags) {
           if (hz == channel.hz) {
@@ -613,41 +622,90 @@ int run_tui() {
     fill_shown();
   };
   // Save the playing station as one you can hear, or forget it again.
-  auto toggle_save = [&] {
+  // --- Naming -----------------------------------------------------------
+  // Save asks for a name first; a saved station can be renamed or forgotten.
+  bool naming = false;
+  std::string name_text;
+  int name_cursor = 0; // starts at the end of the suggested name
+  Component list;      // the station list, built with the other components below
+  Channel name_target;
+  Component name_input;
+  auto start_naming = [&](const std::string &prefill) {
     if (now.name.empty()) {
       message = "Pick a station first, then Save it if you can hear it.";
       return;
     }
-    std::vector<Channel> next = saved;
-    const auto old = std::find_if(next.begin(), next.end(),
-                                  [&](const Channel &s) { return same_station(s, now); });
-    char hz_text[32];
-    std::snprintf(hz_text, sizeof hz_text, "%.1f MHz", static_cast<double>(now.hz) / 1.0e6);
-    std::string done;
-    if (old != next.end()) {
-      done = "Forgot " + old->name + " (" + hz_text + ").";
-      next.erase(old);
-    } else {
-      Channel keep = now;
-      // A found station is named by RDS when RDS has arrived meanwhile.
-      const Receiver::Snapshot snap = receiver.read();
-      if (keep.group == "found" && snap.view.rds_name[0] != '\0') {
-        keep.name = snap.view.rds_name;
-      }
-      keep.group = "saved";
-      next.push_back(keep);
-      std::sort(next.begin(), next.end(),
-                [](const Channel &a, const Channel &b) { return a.hz < b.hz; });
-      done = "Saved " + keep.name + " (" + hz_text + "). It is in the Saved tab.";
-    }
+    name_target = now;
+    name_text = prefill;
+    name_cursor = static_cast<int>(name_text.size());
+    naming = true;
+    message = "Type a name and press Enter (Esc cancels).";
+    name_input->TakeFocus();
+  };
+  auto end_naming = [&] {
+    naming = false;
+    list->TakeFocus();
+  };
+  auto keep_saved = [&](std::vector<Channel> next, const std::string &done) {
+    std::sort(next.begin(), next.end(),
+              [](const Channel &a, const Channel &b) { return a.hz < b.hz; });
     std::string error;
     if (!write_saved(next, &error)) {
       message = error;
       return;
     }
-    saved = next;
+    saved = std::move(next);
     message = done;
     fill_shown();
+  };
+  auto confirm_name = [&] {
+    const std::string name = clean_name(name_text);
+    if (name.empty()) {
+      message = "A name needs at least one letter. Esc cancels.";
+      return;
+    }
+    std::vector<Channel> next = saved;
+    const auto old = std::find_if(next.begin(), next.end(),
+                                  [&](const Channel &s) { return same_station(s, name_target); });
+    char hz_text[32];
+    std::snprintf(hz_text, sizeof hz_text, "%.3f MHz", static_cast<double>(name_target.hz) / 1.0e6);
+    std::string done;
+    if (old != next.end()) {
+      done = "Renamed " + old->name + " to " + name + ".";
+      old->name = name;
+    } else {
+      Channel keep = name_target;
+      keep.name = name;
+      keep.group = "saved";
+      next.push_back(keep);
+      done = "Saved " + name + " (" + hz_text + "). It is in the Saved tab.";
+    }
+    end_naming();
+    keep_saved(std::move(next), done);
+  };
+  auto save_or_forget = [&] {
+    if (now.name.empty()) {
+      message = "Pick a station first, then Save it if you can hear it.";
+      return;
+    }
+    if (is_saved(now)) {
+      std::vector<Channel> next = saved;
+      const std::string name = name_for(now);
+      next.erase(std::remove_if(next.begin(), next.end(),
+                                [&](const Channel &s) { return same_station(s, now); }),
+                 next.end());
+      keep_saved(std::move(next), "Forgot " + name + ".");
+      return;
+    }
+    // Suggest the RDS name when one has arrived, else the current name.
+    const Receiver::Snapshot snap = receiver.read();
+    start_naming(snap.running && snap.view.rds_name[0] != '\0' ? std::string(snap.view.rds_name)
+                                                               : now.name);
+  };
+  auto rename = [&] {
+    if (!now.name.empty()) {
+      start_naming(name_for(now));
+    }
   };
   auto toggle_scan = [&] {
     if (scanner.state().running) {
@@ -707,7 +765,7 @@ int run_tui() {
   list_option.entries = &rows;
   list_option.selected = &selected;
   list_option.on_enter = tune_selected;
-  Component list = Menu(list_option);
+  list = Menu(list_option);
   Box list_box;
   // A click picks the row (the menu does that) and then tunes it.
   Component list_click = CatchEvent(list, [&](Event event) {
@@ -790,7 +848,23 @@ int run_tui() {
       flat);
   Component quit_button = Button(" Quit ", quit, flat);
   std::string save_label;
-  Component save_button = Button(&save_label, toggle_save, flat);
+  Component save_button = Button(&save_label, save_or_forget, flat);
+  Component rename_button = Button(" Rename ", rename, flat);
+  InputOption name_option = InputOption::Default();
+  name_option.content = &name_text;
+  name_option.multiline = false;
+  name_option.placeholder = "station name";
+  name_option.on_enter = confirm_name;
+  name_option.cursor_position = &name_cursor;
+  name_input = Input(name_option);
+  Component name_ok = Button(" OK ", confirm_name, flat);
+  Component name_cancel = Button(
+      " Cancel ",
+      [&] {
+        end_naming();
+        message.clear();
+      },
+      flat);
   std::string scan_label;
   Component scan_button = Button(&scan_label, toggle_scan, flat);
   std::string hop_label;
@@ -805,7 +879,8 @@ int run_tui() {
       Container::Horizontal({vga_down, vga_up}),
       amp_button,
       Container::Horizontal({sql_down, sql_up, gate_button}),
-      Container::Horizontal({save_button, hop_button}),
+      Container::Horizontal({save_button, rename_button, hop_button}),
+      Maybe(Container::Horizontal({name_input, name_ok, name_cancel}), &naming),
       Container::Horizontal({band_menu, scan_button}),
       Container::Horizontal({mute_button, play_button, quit_button}),
   });
@@ -824,7 +899,8 @@ int run_tui() {
     const Scanner::State scan = scanner.state();
     scan_label = scan.running ? " Stop search " : " Search ";
     hop_label = hop.on ? " Stop scan list " : " Scan list ";
-    save_label = !now.name.empty() && is_saved(now) ? " ★ Saved (forget) " : " Save ";
+    const bool now_saved = !now.name.empty() && is_saved(now);
+    save_label = now_saved ? " Forget ★ " : " Save ";
 
     // What is happening, in words.
     std::string sound = "stopped";
@@ -866,7 +942,7 @@ int run_tui() {
       char line[160];
       std::snprintf(line, sizeof line, "%.3f MHz · %s · %s", static_cast<double>(now.hz) / 1.0e6,
                     mode_label(now.mode), now.group.c_str());
-      info.push_back(text(now.name) | bold);
+      info.push_back(text(name_for(now)) | bold);
       info.push_back(text(line));
       info.push_back(paragraph(now.description) | dim);
     }
@@ -915,7 +991,15 @@ int run_tui() {
     info.push_back(hbox({text("Squelch "), sql_down->Render(), text(value), sql_up->Render(),
                          text(" "), gate_button->Render()}));
     info.push_back(separatorEmpty());
-    info.push_back(hbox({save_button->Render(), text("  "), hop_button->Render()}));
+    if (naming) {
+      info.push_back(hbox({text("Name    "), name_input->Render() | size(WIDTH, EQUAL, 26) | border,
+                           text(" "), name_ok->Render(), text(" "), name_cancel->Render()}));
+    } else if (now_saved) {
+      info.push_back(hbox({save_button->Render(), text("  "), rename_button->Render(), text("  "),
+                           hop_button->Render()}));
+    } else {
+      info.push_back(hbox({save_button->Render(), text("  "), hop_button->Render()}));
+    }
     info.push_back(hbox({text("Search  "), band_menu->Render(), text(" "), scan_button->Render()}));
     info.push_back(hbox({mute_button->Render(), text("  "), play_button->Render(), text("  "),
                          quit_button->Render()}));
@@ -1052,7 +1136,20 @@ int run_tui() {
       }
       return false;
     }
-    if (event == Event::CtrlC || event == Event::Character('q')) {
+    if (event == Event::CtrlC) {
+      quit();
+      return true;
+    }
+    // While a name is being typed, keys are letters, not shortcuts.
+    if (naming) {
+      if (event == Event::Escape) {
+        end_naming();
+        message.clear();
+        return true;
+      }
+      return false;
+    }
+    if (event == Event::Character('q')) {
       quit();
       return true;
     }

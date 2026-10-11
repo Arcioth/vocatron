@@ -62,3 +62,16 @@ TEST_CASE("signal bar and amp guard") {
   CHECK_FALSE(vocatron::amp_should_drop(knobs, 0.0f));
   CHECK(vocatron::amp_should_drop(knobs, 1.0f));
 }
+
+TEST_CASE("typed station names are cleaned and fit the list") {
+  CHECK(vocatron::clean_name("  Kral   FM  ") == "Kral FM");
+  CHECK(vocatron::clean_name("tab\there") == "tabhere");
+  CHECK(vocatron::clean_name("   ").empty());
+  CHECK(vocatron::clean_name("Yeşilköy Kule") == "Yeşilköy Kule");
+  const std::string long_name(40, 'x');
+  CHECK(vocatron::clean_name(long_name).size() == vocatron::kNameMaxLetters);
+  // Turkish letters are two bytes but one letter each.
+  CHECK(vocatron::utf8_letters("İstanbul") == 8);
+  CHECK(vocatron::fit_width("İstanbul", 10) == "İstanbul  ");
+  CHECK(vocatron::fit_width("Yeşilköy Kule", 6) == "Yeşilk");
+}

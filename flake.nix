@@ -25,6 +25,10 @@
         # libraries the later milestones link; they are here so the
         # shell does not have to grow a new input at each step.
         # ftxui draws the station screen: layout, buttons, and mouse clicks.
+        # The release preset builds for this exact CPU (-march=native).
+        # Nix's compiler wrapper drops that flag unless told otherwise.
+        NIX_ENFORCE_NO_NATIVE = 0;
+
         buildInputs = with pkgs; [
           hackrf
           liquid-dsp

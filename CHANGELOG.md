@@ -33,6 +33,10 @@
   marine, 2 m, 70 cm, PMR446, CB and shortwave: watches for transmissions
   and lists channels as talk ×N or steady, with interference combs hidden.
 - Scan list: hop through a tab's stations and stop on the one that talks.
+- Naming: Save asks for a name (RDS name suggested), saved stations can be
+  renamed or forgotten, and your names show in every tab. UTF-8 names
+  (Turkish letters) work.
+- New README with the logo (`docs/vocatron.png`).
 
 ## 2026-10-09
 

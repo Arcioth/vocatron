@@ -3,6 +3,7 @@
 // The knobs on the station screen, as plain values. No radio and no
 // terminal, so tests can turn the same knobs the screen does.
 
+#include <cstddef>
 #include <string>
 
 namespace vocatron {
@@ -118,6 +119,65 @@ constexpr float kAmpClipLimitPct = 0.5f;
 
 inline bool amp_should_drop(const Knobs &knobs, float clip_pct) {
   return knobs.amp && clip_pct > kAmpClipLimitPct;
+}
+
+// Station names you type. Up to this many letters.
+constexpr std::size_t kNameMaxLetters = 24;
+
+// Letters in a UTF-8 string (so "İstanbul" counts as 8, not 9 bytes).
+inline std::size_t utf8_letters(const std::string &text) {
+  std::size_t count = 0;
+  for (const char c : text) {
+    if ((static_cast<unsigned char>(c) & 0xC0u) != 0x80u) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+// The first `letters` letters of a UTF-8 string, never cutting one in half.
+inline std::string utf8_prefix(const std::string &text, std::size_t letters) {
+  std::size_t seen = 0;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    if ((static_cast<unsigned char>(text[i]) & 0xC0u) != 0x80u) {
+      if (seen == letters) {
+        return text.substr(0, i);
+      }
+      ++seen;
+    }
+  }
+  return text;
+}
+
+// Cut or pad to exactly `width` letters, for the list columns.
+inline std::string fit_width(const std::string &text, std::size_t width) {
+  std::string out = utf8_prefix(text, width);
+  out.append(width - utf8_letters(out), ' ');
+  return out;
+}
+
+// A typed name made safe to keep: control characters dropped, spaces at
+// the ends trimmed and runs of spaces squeezed to one, at most
+// kNameMaxLetters letters. Empty means there was nothing usable.
+inline std::string clean_name(const std::string &typed) {
+  std::string out;
+  bool space = false;
+  for (const char c : typed) {
+    const auto byte = static_cast<unsigned char>(c);
+    if (byte < 0x20u || byte == 0x7Fu) {
+      continue;
+    }
+    if (c == ' ') {
+      space = !out.empty();
+      continue;
+    }
+    if (space) {
+      out += ' ';
+      space = false;
+    }
+    out += c;
+  }
+  return utf8_prefix(out, kNameMaxLetters);
 }
 
 } // namespace vocatron

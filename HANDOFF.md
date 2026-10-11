@@ -363,6 +363,17 @@ reading, moves on after 3 s of quiet or 20 s of non-stop open. Search
 "steady" results are skipped. A live run stopped on 127.100, 135.400 and
 126.425 in turn. Debug tests: 32 cases.
 
+## Naming (2026-10-11)
+
+Save opens a name prompt (FTXUI Input, cursor at the end of the suggested
+name: the RDS name if one arrived, else the current name). Saved stations
+get Rename and Forget. `name_for()` shows the saved name in every tab.
+Names go through `clean_name` (control characters dropped, spaces
+squeezed, 24 letters max) and the list uses `fit_width`, which counts UTF-8
+letters, so "Atatürk Kule" lines up. Tested live on LTBA_TWR: save as
+"Atatürk Kule", rename to "Ataturk Tower", forget; the user's 12 saved
+stations were backed up and came through unchanged. Debug tests: 33 cases.
+
 ## Not done
 
 - `hardware.hackrf.enable` is not in `~/Documents/nixos`. The board opened without it.
