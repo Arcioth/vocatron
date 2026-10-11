@@ -101,6 +101,17 @@ private:
 WfmResult demod_nfm(const std::uint8_t *iq, std::size_t bytes, std::uint32_t sample_rate_hz,
                     float shift_hz);
 
+// Speaker gain for "wfm", "am", or "nfm", so a normal voice plays at about
+// the same loudness in every mode.
+//
+// The three demodulators come out at very different sizes. AM's volume
+// control holds speech near 1.6 RMS. Narrow FM turns 3 kHz of wiggle on a
+// 1 kHz voice into only about 0.09 RMS after the treble cut. Wide FM turns
+// a 25 kHz program swing into about 0.35 RMS. Each gain brings that to about
+// 0.08 RMS at the speaker. Empty-channel hiss stays under full scale in
+// every mode. tests/level_test.cpp checks these numbers.
+float play_gain_for_mode(const char *mode);
+
 // 16-bit mono WAV.
 // `peak_target` 0.4 scales the loudest peak to 40% of full scale.
 // `peak_target` 0 means the samples are already in [-1, 1].

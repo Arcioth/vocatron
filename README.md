@@ -236,7 +236,7 @@ on, with a squelch level chosen for the mode (AM -58, wide FM -32, narrow FM
 | `[` / `]` | Squelch looser / tighter by 2 dB (kept until the station changes) |
 | `s` | Squelch on/off |
 | `m` | Mute the speaker |
-| `-` / `=` (or `+`) | LNA down / up by 8 dB, retunes |
+| `-` / `=` (or `+`) | LNA down / up by 8 dB, applied without restarting the radio |
 | `g` | Cycle the group filter |
 | Esc | Stop the radio |
 | `q` | Quit |
@@ -279,8 +279,15 @@ Per mode:
 | `wfm` | FM discriminator on a 240 kHz channel | 50 us de-emphasis (Europe and Turkey, not the US 75 us) |
 
 Filters are created once and keep their state for the whole session, because
-rebuilding them per block causes clicks. Playback gain is low (0.05) so the
-hiss of an empty channel stays quiet.
+rebuilding them per block causes clicks. Each mode has its own speaker gain
+(AM 0.05, narrow FM 1.0, wide FM 0.25), so a normal voice plays at about
+-22 dBFS RMS in all three and empty-channel hiss never clips. Without
+squelch, an empty FM channel's hiss is louder than a voice; that is normal
+for FM and is what the squelch is for.
+
+In the station screen, a station change or LNA step keeps the radio and the
+speakers open. The tuner moves, the demodulator is rebuilt, and about 0.1 s
+of audio is muted while the new station settles.
 
 ## Channels
 

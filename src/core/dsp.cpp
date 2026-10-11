@@ -47,6 +47,10 @@ constexpr float kNfmDcR = 0.98f;
 constexpr std::uint32_t kExpectedRate = 2'400'000;
 constexpr float kDeemphTau = 50e-6f;
 constexpr unsigned kBlockIn = 24000; // divisible by 10*5 and by 50
+// Speaker gains. See play_gain_for_mode in dsp.hpp for where they come from.
+constexpr float kAmPlayGain = 0.05f;
+constexpr float kNfmPlayGain = 1.0f;
+constexpr float kWfmPlayGain = 0.25f;
 
 int8_t as_int8(std::uint8_t byte) {
   return byte < 128 ? static_cast<int8_t>(byte) : static_cast<int8_t>(static_cast<int>(byte) - 256);
@@ -624,6 +628,16 @@ WfmResult demod_nfm(const std::uint8_t *iq, std::size_t bytes, std::uint32_t sam
   result.channel_dbfs = stream.channel_dbfs();
   result.ok = !result.audio.empty();
   return result;
+}
+
+float play_gain_for_mode(const char *mode) {
+  if (mode != nullptr && std::strcmp(mode, "nfm") == 0) {
+    return kNfmPlayGain;
+  }
+  if (mode != nullptr && std::strcmp(mode, "wfm") == 0) {
+    return kWfmPlayGain;
+  }
+  return kAmPlayGain;
 }
 
 bool write_wav_s16(const char *path, const float *audio, std::size_t count, std::uint32_t rate_hz,

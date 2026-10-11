@@ -406,10 +406,25 @@ struct TickBag {
   Live *live = nullptr;
   std::string *message = nullptr;
   bool *quit = nullptr;
+  // Station changes go here so the radio stays open between stations.
+  ListenRetune *retune = nullptr;
   int rows = 24;
   int cols = 80;
   // [ ] and s keep the user's gate. A new station name clears it.
   bool squelch_manual = false;
+
+  // Enter on another station, or an LNA step. The playing row may be
+  // hidden by the group filter; then an LNA step keeps the same station.
+  void ask_retune() {
+    if (model->playing >= 0 && model->playing < model->count) {
+      adopt((*shown)[static_cast<std::size_t>(model->playing)]);
+    }
+    retune->pending = true;
+    retune->channel_hz = now->hz;
+    retune->mode = now->mode.c_str();
+    retune->lna_db = static_cast<std::uint32_t>(model->lna);
+    message->clear();
+  }
 
   void note_squelch_key(TuiKey key) {
     if (key == TuiKey::SqlLoosen || key == TuiKey::SqlTighten || key == TuiKey::SqlToggle) {
@@ -465,6 +480,8 @@ struct TickBag {
       if (action == TuiAction::Quit) {
         *quit = true;
         stop = true;
+      } else if (action == TuiAction::Retune && retune != nullptr) {
+        ask_retune();
       } else if (action == TuiAction::Idle || action == TuiAction::Retune ||
                  action == TuiAction::Listen) {
         stop = true;
@@ -564,6 +581,8 @@ int run_tui() {
   bag.live = &live;
   bag.message = &message;
   bag.quit = &quit;
+  ListenRetune retune;
+  bag.retune = &retune;
   if (model.count > 0) {
     bag.adopt(shown[static_cast<std::size_t>(model.selected)]);
   } else {
@@ -622,6 +641,8 @@ int run_tui() {
     config.pass_audio = &live.pass_audio;
     bool signaled = false;
     config.signal_stop = &signaled;
+    config.retune = &retune;
+    retune.pending = false;
 
     const int rc = run_listen(config);
     if (g_tui_stop != 0 || signaled) {

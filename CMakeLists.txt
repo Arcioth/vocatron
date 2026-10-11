@@ -42,6 +42,7 @@ add_executable(vocatron_tests
                tests/playback_test.cpp
                tests/squelch_test.cpp
                tests/tui_test.cpp
+               tests/level_test.cpp
                src/core/channels.cpp
                src/core/dsp.cpp
                src/core/playback.cpp

@@ -1,5 +1,19 @@
 # CHANGELOG — vocatron
 
+## 2026-10-11
+
+- Renamed from radiovoc to vocatron (folder, CMake targets, namespace,
+  docs). Published at https://github.com/Arcioth/vocatron with a README.
+- Speaker gain per mode: AM 0.05, narrow FM 1.0, wide FM 0.25. Narrow FM
+  voice was about 26 dB too quiet. New `tests/level_test.cpp` checks that a
+  voice-level tone lands near −22 dBFS RMS in every mode and hiss never clips.
+- The station screen changes station and LNA in place. The radio and the
+  speakers stay open. A user-chosen stop no longer reports dropped bytes as
+  a broken receiver.
+- RF: the USB-C adapter chain raised the airband floor about 5 dB. With a
+  direct cable at spot 1, ATIS reads −35.5 dBFS. FM is still weak on the
+  25 cm whip. Details in HANDOFF.md.
+
 ## 2026-10-09
 
 - LTFM ATIS on 128.200 MHz was heard with a hand around the antenna at every

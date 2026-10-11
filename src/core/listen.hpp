@@ -21,6 +21,18 @@ struct ListenView {
 // Return false to stop this listen. The TUI uses this to draw and read keys.
 using ListenTick = bool (*)(const ListenView &view, void *user);
 
+// A station change asked for by the tick. The tick fills it in and sets
+// `pending`. Right after the tick returns, run_listen moves the tuner and
+// swaps the demodulator without closing the radio or the speakers, then
+// clears `pending`. `mode` is read at that moment only.
+struct ListenRetune {
+  bool pending = false;
+  std::uint64_t channel_hz = 0;
+  // "wfm", "am", or "nfm".
+  const char *mode = nullptr;
+  std::uint32_t lna_db = 16;
+};
+
 struct ListenConfig {
   std::uint64_t channel_hz = 0;
   // Printed in the status line. For a typed frequency this is that text.
@@ -50,6 +62,9 @@ struct ListenConfig {
   std::atomic<bool> *pass_audio = nullptr;
   // Set when Ctrl-C or SIGTERM ended the run.
   bool *signal_stop = nullptr;
+  // Station changes from the tick. Null means one station per run.
+  // Not allowed while recording: the run stops with an error instead.
+  ListenRetune *retune = nullptr;
 };
 
 // 0: known name. hz, name, mode, and group filled in.

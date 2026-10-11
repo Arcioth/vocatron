@@ -2,7 +2,7 @@
 
 Receive-only HackRF voice receiver. Spec is `AGENTS.md`. Independent of Raphael.
 
-## State (2026-10-09)
+## State (2026-10-11)
 
 Milestones 1 through 8 are in place, and squelch is in on top of them.
 
@@ -84,8 +84,8 @@ has no broadcast station, and the WAV is scaled so its peak is 40% of full scale
 
 `listen POWER_FM --seconds 1.2 --lna 40 --vga 26` opened PulseAudio, played,
 dropped 0 USB bytes, and had 0 underruns. The ADC sat near −25 dBFS, the same
-high-gain noise floor as the earlier 100 MHz capture. Playback gain is 0.05
-so that hiss stays small. The nix dev-shell loader does not search the system
+high-gain noise floor as the earlier 100 MHz capture. Playback gain was 0.05
+for every mode then; see "Antenna, cable, and loudness (2026-10-11)". The nix dev-shell loader does not search the system
 library path, so playback opens `/run/current-system/sw/lib/libpulse.so.0`
 (or `/usr/lib/libpulse.so.0`) before miniaudio asks for it.
 
@@ -224,6 +224,42 @@ An earlier live check at LNA 16 and squelch −40 showed PMR1 near −68 dBFS
 with `sql SHUT`, clip 0, dropped 0, underruns 0. That gain sits under the
 airport radio. LNA 40 is the start now. The line under the meter says to
 raise LNA when a voice is thin. It does not talk about whip length.
+
+## Antenna, cable, and loudness (2026-10-11)
+
+Renamed from radiovoc to vocatron. Public repo: https://github.com/Arcioth/vocatron.
+Firmware now reports `n_261008`.
+
+`hackrf_sweep` (receive only), 86–137 MHz, LNA 40, VGA 26, amp off, 50 kHz bins:
+
+| Setup | Airband floor | 128.200 over floor | FM band over the 108–117 gap |
+|---|---|---|---|
+| USB-C adapter + C-to-C cable, hand off | −49.8 dBFS | 12.4 dB | 4.6 dB |
+| Same, hand around the whip | −41.8 | 12.7 | −0.1 |
+| Direct cable, no adapter | −54.5 | 14.8 | 3.1 |
+| Direct cable, spot 2 | −43.3 | 5.4 | 2.5 |
+| Direct cable, spot 3 | −48.0 | 3.5 | 0.1 |
+
+A hand raises the carrier and the floor by the same 8 dB. Spot 2 is not
+overload: from LNA 16 to 40 the floor rose about 7 dB per 8 dB step. Spot 2
+had cellular 30–40 dB stronger (768–776, 804, 955 MHz) but more VHF noise.
+Spot 1 with the direct cable is the keeper. There `listen LTFM_ATIS` read
+the channel at −35.5 dBFS, dropped 0. FM broadcast is still only a few dB
+over the floor. The ~25 cm whip is about a third of a quarter-wave at
+100 MHz, so a longer antenna is the remaining fix for FM.
+
+Speaker gain is now per mode (`play_gain_for_mode` in `dsp.cpp`): AM 0.05,
+narrow FM 1.0, wide FM 0.25. Before, narrow FM voice played near −47 dBFS.
+A 1 kHz voice-level tone now comes out near −22 dBFS RMS in every mode
+(`tests/level_test.cpp`). Live ATIS recorded at −21.5 dBFS RMS. Empty PMR1
+with squelch off is −15 dBFS RMS of hiss.
+
+The station screen changes station and LNA without closing the radio
+(`ListenRetune` in `listen.hpp`). The DSP thread drops 256 KiB of I/Q from
+the old tune, builds the new demodulator, and starts with the gate shut.
+A scripted run went LTFM_ATIS → LTFJ_ATIS → IST_APP → LNA 32 with dropped 0
+and no restart (the underrun count kept rising, 0 → 5 → 13, which is the
+muted settle gap). Debug tests: 19 cases, 10172 assertions.
 
 ## Not done
 

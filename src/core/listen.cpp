@@ -39,9 +39,10 @@ constexpr std::uint32_t kSampleRateHz = 2'400'000;
 constexpr std::uint32_t kBasebandRequestHz = 1'750'000;
 constexpr std::uint64_t kLoOffsetHz = 250'000;
 constexpr float kShiftHz = 250'000.0f;
-// A full-loudness broadcast comes out of the demodulator as a swing of
-// about a radian. This gain keeps an empty channel's hiss small.
-constexpr float kPlayGain = 0.05f;
+// After a station change, drop this much I/Q (about 55 ms). It covers USB
+// transfers that were already in flight from the old frequency and the
+// tuner settling. The demodulator then mutes its own first 50 ms.
+constexpr std::size_t kSettleBytes = 1u << 18;
 
 volatile std::sig_atomic_t g_stop = 0;
 
@@ -183,6 +184,98 @@ private:
   bool running_ = false;
 };
 
+enum class Demod { Wfm, Am, Nfm };
+
+// "wfm", "am", or "nfm" to a Demod. False for anything else.
+bool parse_demod(const char *mode, Demod *out) {
+  if (mode == nullptr) {
+    return false;
+  }
+  if (std::strcmp(mode, "wfm") == 0) {
+    *out = Demod::Wfm;
+  } else if (std::strcmp(mode, "am") == 0) {
+    *out = Demod::Am;
+  } else if (std::strcmp(mode, "nfm") == 0) {
+    *out = Demod::Nfm;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+const char *demod_tag(Demod demod) {
+  switch (demod) {
+  case Demod::Am:
+    return "am";
+  case Demod::Nfm:
+    return "nfm";
+  case Demod::Wfm:
+    break;
+  }
+  return "wfm";
+}
+
+const char *demod_name(Demod demod) {
+  switch (demod) {
+  case Demod::Am:
+    return "AM";
+  case Demod::Nfm:
+    return "narrow FM";
+  case Demod::Wfm:
+    break;
+  }
+  return "wide FM";
+}
+
+// Whichever one demodulator is playing. A station change throws the old
+// one away and builds the new one, so no filter remembers the old station.
+class Decoder {
+public:
+  bool build(Demod demod) {
+    wfm_.reset();
+    am_.reset();
+    nfm_.reset();
+    demod_ = demod;
+    switch (demod) {
+    case Demod::Am:
+      return am_.emplace(kSampleRateHz, kShiftHz).ok();
+    case Demod::Nfm:
+      return nfm_.emplace(kSampleRateHz, kShiftHz).ok();
+    case Demod::Wfm:
+      break;
+    }
+    return wfm_.emplace(kSampleRateHz, kShiftHz).ok();
+  }
+
+  Demod demod() const { return demod_; }
+
+  std::size_t process(const std::uint8_t *iq, std::size_t bytes, float *dst, std::size_t cap) {
+    if (am_) {
+      return am_->process(iq, bytes, dst, cap);
+    }
+    if (nfm_) {
+      return nfm_->process(iq, bytes, dst, cap);
+    }
+    return wfm_ ? wfm_->process(iq, bytes, dst, cap) : 0;
+  }
+
+  float channel_dbfs() const {
+    if (am_) {
+      return am_->channel_dbfs();
+    }
+    if (nfm_) {
+      return nfm_->channel_dbfs();
+    }
+    return wfm_ ? wfm_->channel_dbfs() : -200.0f;
+  }
+
+private:
+  Demod demod_ = Demod::Wfm;
+  std::optional<WfmStream> wfm_;
+  std::optional<AmStream> am_;
+  std::optional<NfmStream> nfm_;
+};
+
 } // namespace
 
 int resolve_channel_name(const char *text, std::uint64_t *hz, const char **name, const char **mode,
@@ -239,22 +332,13 @@ int run_listen(const ListenConfig &config) {
     std::fprintf(stderr, "mode must be wfm, am, or nfm\n");
     return 1;
   }
-  enum class Demod { Wfm, Am, Nfm };
   Demod demod = Demod::Wfm;
-  const char *mode_tag = "wfm";
-  const char *mode_name = "wide FM";
-  if (std::strcmp(config.mode, "am") == 0) {
-    demod = Demod::Am;
-    mode_tag = "am";
-    mode_name = "AM";
-  } else if (std::strcmp(config.mode, "nfm") == 0) {
-    demod = Demod::Nfm;
-    mode_tag = "nfm";
-    mode_name = "narrow FM";
-  } else if (std::strcmp(config.mode, "wfm") != 0) {
+  if (!parse_demod(config.mode, &demod)) {
     std::fprintf(stderr, "mode must be wfm, am, or nfm\n");
     return 1;
   }
+  const char *mode_tag = demod_tag(demod);
+  const char *mode_name = demod_name(demod);
   if (config.vga_db > 26 || config.vga_db % 2 != 0) {
     std::fprintf(stderr,
                  "--vga must be an even number from 0 to 26\n"
@@ -341,22 +425,17 @@ int run_listen(const ListenConfig &config) {
     return 1;
   }
 
+  // A station change from the tick. The main thread moves the tuner, then
+  // bumps tune_gen. The DSP thread sees the new number and swaps demodulators.
+  std::atomic<int> want_demod{static_cast<int>(demod)};
+  std::atomic<unsigned> tune_gen{0};
+  std::atomic<bool> dsp_failed{false};
+
   std::thread dsp([&] {
-    std::optional<WfmStream> wfm;
-    std::optional<AmStream> am_demod;
-    std::optional<NfmStream> nfm_demod;
-    if (demod == Demod::Am) {
-      am_demod.emplace(kSampleRateHz, kShiftHz);
-    } else if (demod == Demod::Nfm) {
-      nfm_demod.emplace(kSampleRateHz, kShiftHz);
-    } else {
-      wfm.emplace(kSampleRateHz, kShiftHz);
-    }
-    const bool ready = demod == Demod::Am    ? am_demod->ok()
-                       : demod == Demod::Nfm ? nfm_demod->ok()
-                                             : wfm->ok();
-    if (!ready) {
+    Decoder decoder;
+    if (!decoder.build(demod)) {
       std::fprintf(stderr, "%s demodulator did not start\n", mode_name);
+      dsp_failed.store(true, std::memory_order_relaxed);
       producer_done.store(true, std::memory_order_release);
       return;
     }
@@ -364,7 +443,33 @@ int run_listen(const ListenConfig &config) {
     std::vector<float> audio(8192);
     std::vector<float> gained(8192);
     Squelch squelch(config.squelch, config.squelch_dbfs, 48000);
+    float play_gain = play_gain_for_mode(demod_tag(demod));
+    unsigned seen_gen = 0;
+    std::size_t settle_bytes = 0;
     while (true) {
+      const unsigned gen = tune_gen.load(std::memory_order_acquire);
+      if (gen != seen_gen) {
+        // New station. This builds new filters, so it allocates once here,
+        // while the audio is muted. Steady listening still never allocates.
+        seen_gen = gen;
+        const auto next = static_cast<Demod>(want_demod.load(std::memory_order_relaxed));
+        if (!decoder.build(next)) {
+          std::fprintf(stderr, "%s demodulator did not start\n", demod_name(next));
+          dsp_failed.store(true, std::memory_order_relaxed);
+          break;
+        }
+        play_gain = play_gain_for_mode(demod_tag(next));
+        // Everything already queued was tuned to the old station.
+        while (iq_ring.try_read(chunk.data(), chunk.size()) > 0) {
+        }
+        settle_bytes = kSettleBytes;
+        // Start the new station with the gate shut and fresh meters.
+        squelch = Squelch(config.squelch, config.squelch_dbfs, 48000);
+        levels.clip_samples.store(0, std::memory_order_relaxed);
+        levels.total_samples.store(0, std::memory_order_relaxed);
+        levels.raw_peak.store(0.0f, std::memory_order_relaxed);
+        levels.channel_dbfs.store(-200.0f, std::memory_order_relaxed);
+      }
       std::size_t n = iq_ring.try_read(chunk.data(), chunk.size());
       if (n == 0) {
         if (producer_done.load(std::memory_order_acquire)) {
@@ -377,14 +482,19 @@ int run_listen(const ListenConfig &config) {
           continue;
         }
       }
+      if (settle_bytes > 0) {
+        // USB was still carrying samples from before the tuner moved.
+        const std::size_t drop = std::min(n, settle_bytes);
+        settle_bytes -= drop;
+        n -= drop;
+        if (n == 0) {
+          continue;
+        }
+        std::memmove(chunk.data(), chunk.data() + drop, n);
+      }
       meter_iq(chunk.data(), n, levels);
-      const std::size_t got =
-          demod == Demod::Am    ? am_demod->process(chunk.data(), n, audio.data(), audio.size())
-          : demod == Demod::Nfm ? nfm_demod->process(chunk.data(), n, audio.data(), audio.size())
-                                : wfm->process(chunk.data(), n, audio.data(), audio.size());
-      const float channel_db = demod == Demod::Am    ? am_demod->channel_dbfs()
-                               : demod == Demod::Nfm ? nfm_demod->channel_dbfs()
-                                                     : wfm->channel_dbfs();
+      const std::size_t got = decoder.process(chunk.data(), n, audio.data(), audio.size());
+      const float channel_db = decoder.channel_dbfs();
       if (got > 0) {
         if (config.squelch_enabled != nullptr && config.squelch_level != nullptr) {
           squelch.set_level(config.squelch_enabled->load(std::memory_order_relaxed),
@@ -397,7 +507,7 @@ int run_listen(const ListenConfig &config) {
       float chunk_peak = 0.0f;
       for (std::size_t i = 0; i < got; ++i) {
         chunk_peak = std::max(chunk_peak, std::fabs(audio[i]));
-        float sample = audio[i] * kPlayGain;
+        float sample = audio[i] * play_gain;
         if (sample > 1.0f) {
           sample = 1.0f;
         } else if (sample < -1.0f) {
@@ -487,6 +597,29 @@ int run_listen(const ListenConfig &config) {
     }
   }
 
+  // Move the tuner and LNA while the stream keeps running, then tell the
+  // DSP thread to swap demodulators. The radio and speakers stay open.
+  bool failed = false;
+  auto apply_retune = [&](ListenRetune &retune) -> bool {
+    retune.pending = false;
+    Demod next = Demod::Wfm;
+    if (!parse_demod(retune.mode, &next) || retune.channel_hz <= kLoOffsetHz ||
+        retune.lna_db > 40 || retune.lna_db % 8 != 0) {
+      return false;
+    }
+    // A recording is one station from start to end.
+    if (config.out_path != nullptr) {
+      return false;
+    }
+    if (!check_call("hackrf_set_freq", hackrf_set_freq(dev, retune.channel_hz - kLoOffsetHz)) ||
+        !check_call("hackrf_set_lna_gain", hackrf_set_lna_gain(dev, retune.lna_db))) {
+      return false;
+    }
+    want_demod.store(static_cast<int>(next), std::memory_order_relaxed);
+    tune_gen.fetch_add(1, std::memory_order_release);
+    return true;
+  };
+
   auto next_status = t0 + std::chrono::seconds(1);
   const bool tty = isatty(STDOUT_FILENO) == 1;
   while (g_stop == 0 && !stop_now) {
@@ -511,9 +644,17 @@ int run_listen(const ListenConfig &config) {
       }
       break;
     }
+    if (dsp_failed.load(std::memory_order_relaxed)) {
+      failed = true;
+      break;
+    }
     if (quiet) {
       if (!publish(elapsed)) {
         stop_now = true;
+        break;
+      }
+      if (config.retune != nullptr && config.retune->pending && !apply_retune(*config.retune)) {
+        failed = true;
         break;
       }
     } else if (now >= next_status) {
@@ -583,10 +724,15 @@ int run_listen(const ListenConfig &config) {
                 static_cast<double>(recorded.size()) / 48000.0);
   }
 
+  if (failed) {
+    return 1;
+  }
   if (!stop_now && (stalled || usb_bytes == 0)) {
     return 1;
   }
-  if (dropped != 0) {
+  // The screen chose to stop. A few dropped bytes earlier is not a reason
+  // to report the receiver as broken.
+  if (dropped != 0 && !stop_now) {
     std::fprintf(stderr, "The sample queue dropped bytes. The demodulator did not keep up.\n");
     return 1;
   }
